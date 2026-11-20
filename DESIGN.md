@@ -1959,6 +1959,36 @@ Body：
 { "status": "ok" }
 ```
 
+#### 释放租约（Action）
+
+**POST** `/{proxy_token}/api/v1/{platform_name}/actions/release-lease`
+
+Body：
+
+```json
+{
+  "account": "acc1"
+}
+```
+
+字段要求：
+
+- 必填字段：`account`
+- 路径字段：`platform_name` 为平台名称（非 UUID）
+
+关键校验（最小集）：
+
+- `platform_name`、`account` trim 后必须非空。
+- 平台不存在返回 404；lease 不存在返回 404（调用方将 404 视为已释放）。
+
+返回：
+
+```json
+{ "status": "ok" }
+```
+
+用途：上游业务系统在删除或作废一个账号时释放其粘性租约，让出口 IP 回到闲置池，无需持有 Admin Token。
+
 ### Request Logs
 
 #### 查询日志列表

@@ -128,6 +128,31 @@ func (s *ControlPlaneService) InheritLeaseByPlatformName(platformName, parentAcc
 	return nil
 }
 
+// ReleaseLeaseByPlatformName removes one account's lease, resolved by
+// platform name. It backs the proxy-token release-lease action so junction
+// can free an exit IP after deleting or invalidating an account without
+// holding the admin token.
+func (s *ControlPlaneService) ReleaseLeaseByPlatformName(platformName, account string) error {
+	platformName = strings.TrimSpace(platformName)
+	if platformName == "" {
+		return invalidArg("platform: must be non-empty")
+	}
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return invalidArg("account: must be non-empty")
+	}
+
+	plat, ok := s.Pool.GetPlatformByName(platformName)
+	if !ok || plat == nil {
+		return notFound("platform not found")
+	}
+
+	if !s.Router.DeleteLease(plat.ID, account) {
+		return notFound("lease not found")
+	}
+	return nil
+}
+
 // DeleteLease removes a single lease.
 func (s *ControlPlaneService) DeleteLease(platformID, account string) error {
 	if _, ok := s.Pool.GetPlatform(platformID); !ok {

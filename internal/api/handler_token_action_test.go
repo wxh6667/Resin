@@ -182,3 +182,98 @@ func TestTokenActionInheritLease_InvalidArguments(t *testing.T) {
 	}
 	assertErrorCode(t, rec, "INVALID_ARGUMENT")
 }
+
+func TestTokenActionReleaseLease_Success(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+	platformName := "token-release-target"
+	platformID := mustCreatePlatform(t, srv, platformName)
+
+	nowNs := time.Now().UnixNano()
+	lease := model.Lease{
+		PlatformID:     platformID,
+		Account:        "doomed-account",
+		NodeHash:       node.HashFromRawOptions([]byte(`{"id":"token-release-node"}`)).Hex(),
+		EgressIP:       "203.0.113.11",
+		CreatedAtNs:    nowNs - int64(10*time.Minute),
+		ExpiryNs:       nowNs + int64(30*time.Minute),
+		LastAccessedNs: nowNs - int64(time.Minute),
+	}
+	if err := cp.Router.UpsertLease(lease); err != nil {
+		t.Fatalf("seed lease: %v", err)
+	}
+
+	handler := NewTokenActionHandler("tok", cp, 1<<20)
+	rec := doTokenJSONRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/tok/api/v1/"+platformName+"/actions/release-lease",
+		map[string]any{"account": "doomed-account"},
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if cp.Router.ReadLease(model.LeaseKey{PlatformID: platformID, Account: "doomed-account"}) != nil {
+		t.Fatal("expected lease to be removed")
+	}
+}
+
+func TestTokenActionReleaseLease_MissingLeaseReturnsNotFound(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+	platformName := "token-release-missing"
+	_ = mustCreatePlatform(t, srv, platformName)
+
+	handler := NewTokenActionHandler("tok", cp, 1<<20)
+	rec := doTokenJSONRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/tok/api/v1/"+platformName+"/actions/release-lease",
+		map[string]any{"account": "never-existed"},
+	)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestTokenActionReleaseLease_InvalidArguments(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+	_ = mustCreatePlatform(t, srv, "token-release-invalid")
+	handler := NewTokenActionHandler("tok", cp, 1<<20)
+
+	cases := []struct {
+		name   string
+		platform string
+		account string
+		want   int
+	}{
+		{"unknown platform", "no-such-platform", "acct-1", http.StatusNotFound},
+		{"empty account", "token-release-invalid", "  ", http.StatusBadRequest},
+		{"bad token", "", "", http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var rec *httptest.ResponseRecorder
+			if tc.name == "bad token" {
+				rec = doTokenJSONRequest(
+					t,
+					handler,
+					http.MethodPost,
+					"/wrong-token/api/v1/token-release-invalid/actions/release-lease",
+					map[string]any{"account": "acct-1"},
+				)
+			} else {
+				rec = doTokenJSONRequest(
+					t,
+					handler,
+					http.MethodPost,
+					"/tok/api/v1/"+tc.platform+"/actions/release-lease",
+					map[string]any{"account": tc.account},
+				)
+			}
+			if rec.Code != tc.want {
+				t.Fatalf("status: got %d, want %d, body=%s", rec.Code, tc.want, rec.Body.String())
+			}
+		})
+	}
+}
