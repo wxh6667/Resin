@@ -94,25 +94,27 @@ func OpenASNReader(path string) (ASNReader, error) {
 // not exhaustive: it targets the providers observed in production bans and
 // can be extended via the RESIN_HOSTING_ASN environment variable.
 var hostingASNs = map[uint32]struct{}{
-	16509: {}, // Amazon AWS
-	14618: {}, // Amazon AWS ec2
+	16509:  {}, // Amazon AWS
+	14618:  {}, // Amazon AWS ec2
 	396982: {}, // Google Cloud
-	8075: {},  // Microsoft Azure
-	14061: {}, // DigitalOcean
-	63949: {}, // Linode/Akamai
-	20473: {}, // Choopa/Vultr
-	16276: {}, // OVH
-	24940: {}, // Hetzner
-	51167: {}, // Contabo
-	36352: {}, // ColocationCrossing
-	60781: {}, // LeaseWeb
-	9009: {},  // M247
-	31898: {}, // Oracle Cloud
-	21859: {}, // Zenlayer/GTHost adjacent
-	55286: {}, // B2 Net Solutions / server.in
-	53667: {}, // FranTech Solutions
-	45102: {}, // Alibaba Cloud US
-	37963: {}, // Alibaba Cloud
+	8075:   {}, // Microsoft Azure
+	14061:  {}, // DigitalOcean
+	63949:  {}, // Linode/Akamai
+	20473:  {}, // Choopa/Vultr
+	16276:  {}, // OVH
+	24940:  {}, // Hetzner
+	51167:  {}, // Contabo
+	36352:  {}, // ColocationCrossing
+	60781:  {}, // LeaseWeb
+	9009:   {}, // M247
+	31898:  {}, // Oracle Cloud
+	63023:  {}, // GTHost
+	30088:  {}, // GTHost
+	21859:  {}, // Zenlayer/GTHost adjacent
+	55286:  {}, // B2 Net Solutions / server.in
+	53667:  {}, // FranTech Solutions
+	45102:  {}, // Alibaba Cloud US
+	37963:  {}, // Alibaba Cloud
 	132203: {}, // Tencent Cloud
 }
 

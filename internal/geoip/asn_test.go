@@ -7,6 +7,19 @@ import (
 	"testing"
 )
 
+func TestBuiltinHostingASNs(t *testing.T) {
+	// Production bans concentrated on GTHost (AS63023/AS30088); the built-in
+	// list must keep covering them.
+	for _, asn := range []uint32{63023, 30088, 31898, 16509, 20473} {
+		if !IsHostingASN(asn) {
+			t.Errorf("AS%d must be classified as hosting", asn)
+		}
+	}
+	if IsHostingASN(64500) {
+		t.Fatal("unknown ASN must not be classified as hosting")
+	}
+}
+
 func TestExtendHostingASNs(t *testing.T) {
 	t.Run("valid list", func(t *testing.T) {
 		if err := ExtendHostingASNs(" 64512, 64513 "); err != nil {
