@@ -936,6 +936,12 @@ a {
   gap: 14px;
 }
 
+.sync-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .syscfg-page {
   display: flex;
   flex-direction: column;

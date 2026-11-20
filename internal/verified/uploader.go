@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,7 +30,35 @@ const (
 	defaultWindow  = 2 * time.Hour
 	defaultTimeout = 30 * time.Second
 	maxAttempts    = 3
+	maxHistory     = 50
 )
+
+// Attempt records one upload run.
+type Attempt struct {
+	StartedAt   string `json:"started_at"`
+	FinishedAt  string `json:"finished_at"`
+	DurationMS  int64  `json:"duration_ms"`
+	Records     int    `json:"records"`
+	Eligible    int    `json:"eligible"`
+	Stale       int    `json:"stale"`
+	Unsupported int    `json:"unsupported"`
+	Duplicates  int    `json:"duplicates"`
+	Error       string `json:"error,omitempty"`
+	Response    string `json:"response,omitempty"`
+}
+
+// Status is a JSON-friendly snapshot of the uploader for the control plane.
+type Status struct {
+	Enabled        bool      `json:"enabled"`
+	Endpoint       string    `json:"endpoint"`
+	WindowSeconds  int64     `json:"window_seconds"`
+	TimeoutSeconds int64     `json:"timeout_seconds"`
+	Running        bool      `json:"running"`
+	LastAttemptAt  string    `json:"last_attempt_at,omitempty"`
+	LastSuccessAt  string    `json:"last_success_at,omitempty"`
+	LastError      string    `json:"last_error,omitempty"`
+	History        []Attempt `json:"history"`
+}
 
 // Config configures the verified-node uploader.
 type Config struct {
@@ -80,8 +109,15 @@ type Uploader struct {
 	client    *http.Client
 	now       func() time.Time
 
-	running atomic.Bool
-	pending atomic.Bool
+	running  atomic.Bool
+	pending  atomic.Bool
+	inFlight atomic.Int32
+
+	statusMu    sync.Mutex
+	history     []Attempt
+	lastAttempt *Attempt
+	lastSuccess string
+	lastError   string
 }
 
 // NewUploader creates an uploader. It returns an error only when the
@@ -239,31 +275,101 @@ func (u *Uploader) Upload(ctx context.Context) (Stats, error) {
 	if !u.Enabled() {
 		return Stats{}, nil
 	}
-	body, stats, err := u.BuildBatch(u.now())
+	started := u.now()
+	u.inFlight.Add(1)
+	defer u.inFlight.Add(-1)
+
+	stats, response, err := u.uploadBatch(ctx, started)
+	u.recordAttempt(started, u.now(), stats, response, err)
+	return stats, err
+}
+
+func (u *Uploader) uploadBatch(ctx context.Context, started time.Time) (Stats, string, error) {
+	body, stats, err := u.BuildBatch(started)
 	if err != nil {
-		return stats, err
+		return stats, "", err
 	}
 	if stats.Records == 0 {
 		log.Printf(
 			"[verified-upload] no eligible nodes within window %s (pool=%d eligible=%d stale=%d unsupported=%d); skipping",
 			u.cfg.Window, stats.Pool, stats.Eligible, stats.Stale, stats.Unsupported,
 		)
-		return stats, nil
+		return stats, "", nil
 	}
+	log.Printf(
+		"[verified-upload] uploading %d records (eligible=%d stale=%d unsupported=%d duplicates=%d)",
+		stats.Records, stats.Eligible, stats.Stale, stats.Unsupported, stats.Duplicates,
+	)
 
 	compressed, err := gzipBytes(body)
 	if err != nil {
-		return stats, fmt.Errorf("verified upload: gzip batch: %w", err)
+		return stats, "", fmt.Errorf("verified upload: gzip batch: %w", err)
 	}
 	checksum := sha256.Sum256(body)
-	if err := u.postWithRetry(ctx, compressed, hex.EncodeToString(checksum[:])); err != nil {
-		return stats, err
+	response, err := u.postWithRetry(ctx, compressed, hex.EncodeToString(checksum[:]))
+	if err != nil {
+		return stats, response, err
 	}
 	log.Printf(
-		"[verified-upload] uploaded %d records (eligible=%d stale=%d unsupported=%d duplicates=%d)",
-		stats.Records, stats.Eligible, stats.Stale, stats.Unsupported, stats.Duplicates,
+		"[verified-upload] uploaded %d records in %s",
+		stats.Records, u.now().Sub(started).Round(time.Millisecond),
 	)
-	return stats, nil
+	return stats, response, nil
+}
+
+func (u *Uploader) recordAttempt(started, finished time.Time, stats Stats, response string, err error) {
+	attempt := Attempt{
+		StartedAt:   started.UTC().Format(time.RFC3339Nano),
+		FinishedAt:  finished.UTC().Format(time.RFC3339Nano),
+		DurationMS:  finished.Sub(started).Milliseconds(),
+		Records:     stats.Records,
+		Eligible:    stats.Eligible,
+		Stale:       stats.Stale,
+		Unsupported: stats.Unsupported,
+		Duplicates:  stats.Duplicates,
+		Response:    truncate(response, 300),
+	}
+	if err != nil {
+		attempt.Error = err.Error()
+	}
+
+	u.statusMu.Lock()
+	defer u.statusMu.Unlock()
+	if err != nil {
+		u.lastError = err.Error()
+	} else {
+		u.lastError = ""
+		u.lastSuccess = attempt.FinishedAt
+	}
+	u.lastAttempt = &attempt
+	u.history = append([]Attempt{attempt}, u.history...)
+	if len(u.history) > maxHistory {
+		u.history = u.history[:maxHistory]
+	}
+}
+
+// Status returns a concurrency-safe snapshot for the control plane.
+func (u *Uploader) Status() Status {
+	if u == nil {
+		return Status{History: []Attempt{}}
+	}
+	u.statusMu.Lock()
+	defer u.statusMu.Unlock()
+
+	status := Status{
+		Enabled:        u.Enabled(),
+		Endpoint:       u.cfg.Endpoint,
+		WindowSeconds:  int64(u.cfg.Window / time.Second),
+		TimeoutSeconds: int64(u.cfg.Timeout / time.Second),
+		Running:        u.running.Load() || u.inFlight.Load() > 0,
+		LastSuccessAt:  u.lastSuccess,
+		LastError:      u.lastError,
+		History:        append([]Attempt{}, u.history...),
+	}
+	if u.lastAttempt != nil {
+		status.LastAttemptAt = u.lastAttempt.FinishedAt
+	}
+	return status
 }
 
 func gzipBytes(data []byte) ([]byte, error) {
@@ -279,13 +385,15 @@ func gzipBytes(data []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (u *Uploader) postWithRetry(ctx context.Context, body []byte, checksum string) error {
+func (u *Uploader) postWithRetry(ctx context.Context, body []byte, checksum string) (string, error) {
 	backoff := time.Second
 	var lastErr error
+	var lastDetail string
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		retryable, err := u.postOnce(ctx, body, checksum)
+		retryable, detail, err := u.postOnce(ctx, body, checksum)
+		lastDetail = detail
 		if err == nil {
-			return nil
+			return detail, nil
 		}
 		lastErr = err
 		if !retryable || attempt == maxAttempts {
@@ -293,19 +401,19 @@ func (u *Uploader) postWithRetry(ctx context.Context, body []byte, checksum stri
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("verified upload canceled: %w", ctx.Err())
+			return lastDetail, fmt.Errorf("verified upload canceled: %w", ctx.Err())
 		case <-time.After(backoff):
 		}
 		backoff *= 2
 	}
-	return lastErr
+	return lastDetail, lastErr
 }
 
 // postOnce sends the batch and reports whether the failure is retryable.
-func (u *Uploader) postOnce(ctx context.Context, body []byte, checksum string) (retryable bool, err error) {
+func (u *Uploader) postOnce(ctx context.Context, body []byte, checksum string) (retryable bool, detail string, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.cfg.Endpoint, bytes.NewReader(body))
 	if err != nil {
-		return false, fmt.Errorf("verified upload: build request: %w", err)
+		return false, "", fmt.Errorf("verified upload: build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+u.cfg.Token)
 	req.Header.Set("Content-Type", "application/gzip")
@@ -315,24 +423,24 @@ func (u *Uploader) postOnce(ctx context.Context, body []byte, checksum string) (
 
 	resp, err := u.client.Do(req)
 	if err != nil {
-		return true, fmt.Errorf("verified upload: post batch: %w", err)
+		return true, "", fmt.Errorf("verified upload: post batch: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	detail := strings.TrimSpace(string(respBody))
+	detail = strings.TrimSpace(string(respBody))
 	switch {
 	case resp.StatusCode == http.StatusOK:
 		log.Printf("[verified-upload] receiver response: %s", detail)
-		return false, nil
+		return false, detail, nil
 	case resp.StatusCode == http.StatusUnauthorized:
-		return false, fmt.Errorf("verified upload: unauthorized (401); check the upload token")
+		return false, detail, fmt.Errorf("verified upload: unauthorized (401); check the upload token")
 	case resp.StatusCode == http.StatusRequestEntityTooLarge:
-		return false, fmt.Errorf("verified upload: batch exceeds receiver limit (413)")
+		return false, detail, fmt.Errorf("verified upload: batch exceeds receiver limit (413)")
 	case resp.StatusCode >= http.StatusInternalServerError:
-		return true, fmt.Errorf("verified upload: server error %d: %s", resp.StatusCode, truncate(detail, 512))
+		return true, detail, fmt.Errorf("verified upload: server error %d: %s", resp.StatusCode, truncate(detail, 512))
 	default:
-		return false, fmt.Errorf("verified upload: rejected with status %d: %s", resp.StatusCode, truncate(detail, 512))
+		return false, detail, fmt.Errorf("verified upload: rejected with status %d: %s", resp.StatusCode, truncate(detail, 512))
 	}
 }
 

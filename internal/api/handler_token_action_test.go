@@ -242,10 +242,10 @@ func TestTokenActionReleaseLease_InvalidArguments(t *testing.T) {
 	handler := NewTokenActionHandler("tok", cp, 1<<20)
 
 	cases := []struct {
-		name   string
+		name     string
 		platform string
-		account string
-		want   int
+		account  string
+		want     int
 	}{
 		{"unknown platform", "no-such-platform", "acct-1", http.StatusNotFound},
 		{"empty account", "token-release-invalid", "  ", http.StatusBadRequest},

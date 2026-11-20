@@ -11,6 +11,7 @@ import { PlatformPage } from "../features/platforms/PlatformPage";
 import { RequestLogsPage } from "../features/requestLogs/RequestLogsPage";
 import { RulesPage } from "../features/rules/RulesPage";
 import { SubscriptionPage } from "../features/subscriptions/SubscriptionPage";
+import { SyncStatusPage } from "../features/sync/SyncStatusPage";
 import { SystemConfigPage } from "../features/systemConfig/SystemConfigPage";
 
 function NodesRoute() {
@@ -35,6 +36,7 @@ export function AppRoutes() {
         <Route path="/platforms" element={<PlatformPage />} />
         <Route path="/platforms/:platformId" element={<PlatformDetailPage />} />
         <Route path="/subscriptions" element={<SubscriptionPage />} />
+        <Route path="/sync" element={<SyncStatusPage />} />
         <Route path="/nodes" element={<NodesRoute />} />
         <Route path="/endpoints" element={<EndpointsPage />} />
         <Route path="/rules" element={<RulesPage />} />

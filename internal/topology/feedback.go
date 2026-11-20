@@ -169,9 +169,9 @@ func (p *GlobalNodePool) SnapshotNodeDynamic(hash node.Hash) *model.NodeDynamic 
 				LastLatencyProbeAttemptNs:          e.LastLatencyProbeAttempt.Load(),
 				LastAuthorityLatencyProbeAttemptNs: e.LastAuthorityLatencyProbeAttempt.Load(),
 				LastEgressUpdateAttemptNs:          e.LastEgressUpdateAttempt.Load(),
-				ASN:                               e.GetEgressASN(),
-				ASNOrg:                            e.GetEgressASNOrg(),
-				IsHosting:                         e.GetEgressIsHosting(),
+				ASN:                                e.GetEgressASN(),
+				ASNOrg:                             e.GetEgressASNOrg(),
+				IsHosting:                          e.GetEgressIsHosting(),
 			}
 		}
 		return e, xsync.CancelOp

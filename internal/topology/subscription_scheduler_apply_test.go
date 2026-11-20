@@ -1,6 +1,8 @@
 package topology
 
 import (
+	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -92,4 +94,91 @@ func TestScheduler_ScheduledRefreshSkipsInFlightPull(t *testing.T) {
 
 	close(release)
 	<-done
+}
+
+func TestScheduler_RefreshStatsSnapshot(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "StatsSub", "http://example.com", true, false)
+	sub.SetFetchConfig(sub.URL(), int64(time.Hour))
+	subMgr.Register(sub)
+	pool := newTestPool(subMgr)
+
+	body := makeSubscriptionJSON(
+		`{"type":"shadowsocks","tag":"a","server":"1.1.1.1","server_port":443}`,
+	)
+	sched := NewSubscriptionScheduler(SchedulerConfig{
+		SubManager: subMgr,
+		Pool:       pool,
+		Fetcher:    makeMockFetcher(body, nil),
+	})
+
+	sched.UpdateSubscription(sub)
+	snapshot := sched.RefreshStatsSnapshot()
+	if len(snapshot) != 1 {
+		t.Fatalf("snapshot length = %d, want 1", len(snapshot))
+	}
+	stat := snapshot[0]
+	if stat.InFlight || stat.StartedAt == "" || stat.FinishedAt == "" {
+		t.Fatalf("unexpected timing state: %+v", stat)
+	}
+	if stat.Bytes == 0 || stat.Parsed != 1 || stat.Added != 1 || stat.Kept != 0 {
+		t.Fatalf("unexpected counters: %+v", stat)
+	}
+	if stat.Error != "" {
+		t.Fatalf("unexpected error: %q", stat.Error)
+	}
+
+	sched.Fetcher = makeMockFetcher(nil, errors.New("boom"))
+	sched.UpdateSubscription(sub)
+	snapshot = sched.RefreshStatsSnapshot()
+	if len(snapshot) != 1 || !strings.Contains(snapshot[0].Error, "fetch:") {
+		t.Fatalf("failure stats = %+v", snapshot)
+	}
+	if snapshot[0].InFlight {
+		t.Fatalf("in-flight after failure: %+v", snapshot[0])
+	}
+}
+
+func TestScheduler_RefreshStatsShowsInFlight(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "StatsSub", "http://example.com", true, false)
+	sub.SetFetchConfig(sub.URL(), int64(time.Hour))
+	subMgr.Register(sub)
+	pool := newTestPool(subMgr)
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var once atomic.Bool
+	fetcher := func(string) ([]byte, error) {
+		if once.CompareAndSwap(false, true) {
+			close(started)
+		}
+		<-release
+		return makeSubscriptionJSON(
+			`{"type":"shadowsocks","tag":"a","server":"1.1.1.1","server_port":443}`,
+		), nil
+	}
+	sched := NewSubscriptionScheduler(SchedulerConfig{
+		SubManager: subMgr,
+		Pool:       pool,
+		Fetcher:    fetcher,
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sched.UpdateSubscription(sub)
+	}()
+	<-started
+
+	snapshot := sched.RefreshStatsSnapshot()
+	if len(snapshot) != 1 || !snapshot[0].InFlight || snapshot[0].StartedAt == "" {
+		t.Fatalf("in-flight snapshot = %+v", snapshot)
+	}
+
+	close(release)
+	<-done
+	if snapshot := sched.RefreshStatsSnapshot(); snapshot[0].InFlight {
+		t.Fatalf("still in flight after completion: %+v", snapshot[0])
+	}
 }

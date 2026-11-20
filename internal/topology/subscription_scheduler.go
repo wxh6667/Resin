@@ -6,6 +6,7 @@ import (
 	"log"
 	"runtime"
 	"slices"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,6 +44,11 @@ type SubscriptionScheduler struct {
 	// refreshes do not start a second full-pool download while one is running.
 	refreshing sync.Map // subscription ID -> *atomic.Int32
 
+	// refreshStats keeps the latest pull metrics (in-flight or finished) per
+	// subscription for the control-plane status page.
+	statsMu      sync.Mutex
+	refreshStats map[string]RefreshStats
+
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 }
@@ -65,15 +71,15 @@ type SchedulerConfig struct {
 func NewSubscriptionScheduler(cfg SchedulerConfig) *SubscriptionScheduler {
 	downloadCtx, cancelDownload := context.WithCancel(context.Background())
 	sched := &SubscriptionScheduler{
-		subManager:           cfg.SubManager,
-		pool:                 cfg.Pool,
-		downloader:           cfg.Downloader,
-		downloadCtx:          downloadCtx,
-		cancelDownload:       cancelDownload,
+		subManager:         cfg.SubManager,
+		pool:               cfg.Pool,
+		downloader:         cfg.Downloader,
+		downloadCtx:        downloadCtx,
+		cancelDownload:     cancelDownload,
 		onSubUpdated:       cfg.OnSubUpdated,
 		onPullStarted:      cfg.OnPullStarted,
 		onSubReenabledNode: cfg.OnSubReenabledNode,
-		stopCh:               make(chan struct{}),
+		stopCh:             make(chan struct{}),
 	}
 	if cfg.Fetcher != nil {
 		sched.Fetcher = cfg.Fetcher
@@ -206,6 +212,49 @@ func (s *SubscriptionScheduler) runUpdatesWithWorkerLimit(subs []*subscription.S
 	wg.Wait()
 }
 
+// RefreshStats describes one pull attempt (in-flight or finished).
+type RefreshStats struct {
+	SubscriptionID   string `json:"subscription_id"`
+	SubscriptionName string `json:"subscription_name"`
+	InFlight         bool   `json:"in_flight"`
+	StartedAt        string `json:"started_at,omitempty"`
+	FinishedAt       string `json:"finished_at,omitempty"`
+	FetchMS          int64  `json:"fetch_ms"`
+	ParseMS          int64  `json:"parse_ms"`
+	ApplyMS          int64  `json:"apply_ms"`
+	Bytes            int    `json:"bytes"`
+	Parsed           int    `json:"parsed"`
+	Added            int    `json:"added"`
+	Kept             int    `json:"kept"`
+	KeptUnchanged    int    `json:"kept_unchanged"`
+	Removed          int    `json:"removed"`
+	Error            string `json:"error,omitempty"`
+}
+
+func (s *SubscriptionScheduler) publishRefreshStats(stat RefreshStats) {
+	s.statsMu.Lock()
+	if s.refreshStats == nil {
+		s.refreshStats = make(map[string]RefreshStats)
+	}
+	s.refreshStats[stat.SubscriptionID] = stat
+	s.statsMu.Unlock()
+}
+
+// RefreshStatsSnapshot returns per-subscription pull metrics, including
+// in-flight attempts. The result is sorted by subscription name.
+func (s *SubscriptionScheduler) RefreshStatsSnapshot() []RefreshStats {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	out := make([]RefreshStats, 0, len(s.refreshStats))
+	for _, stat := range s.refreshStats {
+		out = append(out, stat)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].SubscriptionName < out[j].SubscriptionName
+	})
+	return out
+}
+
 func (s *SubscriptionScheduler) beginRefresh(id string) {
 	counter, _ := s.refreshing.LoadOrStore(id, new(atomic.Int32))
 	counter.(*atomic.Int32).Add(1)
@@ -233,6 +282,20 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 	s.beginRefresh(sub.ID)
 	defer s.endRefresh(sub.ID)
 
+	refreshStarted := time.Now()
+	stat := RefreshStats{
+		SubscriptionID:   sub.ID,
+		SubscriptionName: sub.Name(),
+		InFlight:         true,
+		StartedAt:        refreshStarted.UTC().Format(time.RFC3339Nano),
+	}
+	s.publishRefreshStats(stat)
+	defer func() {
+		stat.InFlight = false
+		stat.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		s.publishRefreshStats(stat)
+	}()
+
 	attemptStartedNs := time.Now().UnixNano()
 	attemptSeq := sub.NextAttemptSeq()
 	attemptURL := sub.URL()
@@ -257,20 +320,28 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 	} else {
 		body, err = s.Fetcher(attemptURL)
 		if err != nil {
+			stat.FetchMS = time.Since(started).Milliseconds()
+			stat.Error = "fetch: " + err.Error()
 			s.handleUpdateFailure(sub, attemptStartedNs, attemptSeq, attemptConfigVersion, "fetch", err)
 			return
 		}
 	}
 	fetchDuration := time.Since(started)
+	stat.FetchMS = fetchDuration.Milliseconds()
+	stat.Bytes = len(body)
 
 	// 2. Parse (lock-free).
 	started = time.Now()
 	parsed, err := subscription.ParseGeneralSubscription(body)
 	if err != nil {
+		stat.ParseMS = time.Since(started).Milliseconds()
+		stat.Error = "parse: " + err.Error()
 		s.handleUpdateFailure(sub, attemptStartedNs, attemptSeq, attemptConfigVersion, "parse", err)
 		return
 	}
 	parseDuration := time.Since(started)
+	stat.ParseMS = parseDuration.Milliseconds()
+	stat.Parsed = len(parsed)
 
 	// 3. Build refreshed managed nodes map (lock-free, pure computation).
 	refreshedManagedNodes := subscription.NewManagedNodes()
@@ -405,9 +476,15 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 		applied = true
 	})
 	if !applied {
+		stat.Error = "stale attempt ignored"
 		log.Printf("[scheduler] stale success ignored for %s", sub.ID)
 		return
 	}
+	stat.ApplyMS = applyDuration.Milliseconds()
+	stat.Added = addedCount
+	stat.Kept = keptCount
+	stat.KeptUnchanged = unchangedCount
+	stat.Removed = removedCount
 	log.Printf(
 		"[scheduler] refreshed %s: fetch=%s parse=%s apply=%s bytes=%d parsed=%d added=%d kept=%d kept_unchanged=%d removed=%d",
 		sub.ID, fetchDuration, parseDuration, applyDuration,

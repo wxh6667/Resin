@@ -17,6 +17,7 @@ import (
 	"github.com/Resinat/Resin/internal/routing"
 	"github.com/Resinat/Resin/internal/state"
 	"github.com/Resinat/Resin/internal/topology"
+	"github.com/Resinat/Resin/internal/verified"
 )
 
 // ServiceError wraps an error with a code for API response mapping.
@@ -50,17 +51,18 @@ func internal(msg string, err error) *ServiceError {
 // ControlPlaneService provides all control plane operations.
 // Handlers call its methods; business logic lives here, not in handlers.
 type ControlPlaneService struct {
-	Engine          *state.StateEngine
-	Pool            *topology.GlobalNodePool
-	SubMgr          *topology.SubscriptionManager
-	Scheduler       *topology.SubscriptionScheduler
-	Router          *routing.Router
-	GeoIP           *geoip.Service
-	ProbeMgr        *probe.ProbeManager
-	MatcherRuntime  *proxy.AccountMatcherRuntime
-	RuntimeCfg      *atomic.Pointer[config.RuntimeConfig]
-	EnvCfg          *config.EnvConfig
-	EndpointRuntime EndpointRuntime
+	Engine           *state.StateEngine
+	Pool             *topology.GlobalNodePool
+	SubMgr           *topology.SubscriptionManager
+	Scheduler        *topology.SubscriptionScheduler
+	Router           *routing.Router
+	GeoIP            *geoip.Service
+	ProbeMgr         *probe.ProbeManager
+	MatcherRuntime   *proxy.AccountMatcherRuntime
+	RuntimeCfg       *atomic.Pointer[config.RuntimeConfig]
+	EnvCfg           *config.EnvConfig
+	EndpointRuntime  EndpointRuntime
+	VerifiedUploader *verified.Uploader
 
 	configMu      sync.Mutex
 	configVersion int

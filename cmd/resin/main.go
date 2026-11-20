@@ -42,6 +42,7 @@ type topologyRuntime struct {
 	leaseCleaner     *routing.LeaseCleaner
 	outboundMgr      *outbound.OutboundManager
 	singboxBuilder   *outbound.SingboxBuilder // for Close on shutdown
+	verifiedUploader *verified.Uploader
 }
 
 const downloadUserAgent = "clash.meta"
@@ -367,6 +368,7 @@ func newTopologyRuntime(
 		ephemeralCleaner: ephemeralCleaner,
 		outboundMgr:      outboundMgr,
 		singboxBuilder:   singboxBuilder,
+		verifiedUploader: verifiedUploader,
 	}, nil
 }
 

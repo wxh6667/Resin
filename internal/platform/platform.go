@@ -36,7 +36,7 @@ type Platform struct {
 	// listed AS numbers regardless of the hosting flag. An unknown ASN (0)
 	// is never excluded, so a missing ASN database cannot empty the pool.
 	ExcludeHosting bool
-	ASNExcludes     map[uint32]struct{}
+	ASNExcludes    map[uint32]struct{}
 
 	// Other config fields.
 	StickyTTLNs                      int64

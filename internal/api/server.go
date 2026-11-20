@@ -115,6 +115,9 @@ func NewServerWithAddress(
 		authed.Handle("POST /api/v1/account-header-rules:resolve", HandleResolveRule(cp))
 		authed.Handle("DELETE /api/v1/account-header-rules/{prefix...}", HandleDeleteRule(cp))
 
+		// Pull and verified-upload status.
+		authed.Handle("GET /api/v1/sync/status", HandleSyncStatus(cp))
+
 		// Nodes.
 		authed.Handle("GET /api/v1/nodes", HandleListNodes(cp))
 		authed.Handle("GET /api/v1/nodes/{hash}", HandleGetNode(cp))

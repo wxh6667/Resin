@@ -25,7 +25,7 @@ const (
 		`"method":"aes-128-gcm","password":"secret"}`
 	vmessRaw = `{"type":"vmess","tag":"vm-1","server":"192.0.2.11","server_port":443,` +
 		`"uuid":"b831381d-6324-4d53-ad4f-8cda48b30811","security":"auto","alter_id":0}`
-	httpRaw = `{"type":"http","tag":"h-1","server":"192.0.2.12","server_port":8080}`
+	httpRaw    = `{"type":"http","tag":"h-1","server":"192.0.2.12","server_port":8080}`
 	staleSSRaw = `{"type":"shadowsocks","tag":"ss-old","server":"192.0.2.13","server_port":8388,` +
 		`"method":"aes-128-gcm","password":"secret"}`
 	circuitSSRaw = `{"type":"shadowsocks","tag":"ss-open","server":"192.0.2.14","server_port":8388,` +
@@ -301,5 +301,72 @@ func TestNewUploaderRejectsInvalidConfig(t *testing.T) {
 	}
 	if _, err := NewUploader(Config{Endpoint: "https://example.com/x"}, nil, nil); err == nil {
 		t.Fatal("want error for missing token")
+	}
+}
+
+func TestStatusTracksAttempts(t *testing.T) {
+	now := time.Now()
+	pool := buildPool(t, []poolNodeSpec{{raw: ssRaw, probeAt: now.Add(-time.Minute)}})
+
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"total":1,"skipped_invalid":0}`)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	uploader, err := NewUploader(Config{
+		Endpoint:   server.URL,
+		Token:      "token",
+		Window:     time.Hour,
+		Timeout:    time.Second,
+		HTTPClient: server.Client(),
+	}, pool, nil)
+	if err != nil {
+		t.Fatalf("NewUploader: %v", err)
+	}
+	uploader.now = func() time.Time { return now }
+
+	if _, err := uploader.Upload(context.Background()); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	status := uploader.Status()
+	if !status.Enabled || status.Running {
+		t.Fatalf("status enabled/running = %v/%v", status.Enabled, status.Running)
+	}
+	if status.LastSuccessAt == "" || status.LastAttemptAt == "" {
+		t.Fatalf("missing timestamps: %+v", status)
+	}
+	if len(status.History) != 1 || status.History[0].Records != 1 {
+		t.Fatalf("history = %+v", status.History)
+	}
+	if !strings.Contains(status.History[0].Response, "total") {
+		t.Fatalf("history response = %q", status.History[0].Response)
+	}
+
+	if _, err := uploader.Upload(context.Background()); err == nil {
+		t.Fatal("second upload succeeded, want 401")
+	}
+	status = uploader.Status()
+	if status.LastError == "" {
+		t.Fatal("LastError empty after failed upload")
+	}
+	if len(status.History) != 2 || status.History[0].Error == "" {
+		t.Fatalf("history after failure = %+v", status.History)
+	}
+	if status.History[1].Error != "" {
+		t.Fatalf("previous attempt error overwritten: %+v", status.History[1])
+	}
+}
+
+func TestNilUploaderStatus(t *testing.T) {
+	var uploader *Uploader
+	status := uploader.Status()
+	if status.Enabled || len(status.History) != 0 {
+		t.Fatalf("nil status = %+v", status)
 	}
 }
