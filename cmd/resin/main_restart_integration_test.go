@@ -106,7 +106,9 @@ func TestBootstrapRestart_RecoversTopologyAndStickyLease(t *testing.T) {
 
 	entry1.SetEgressIP(egressIP)
 	entry1.SetEgressRegion("hk")
-	entry1.SetEgressASN(node.ASNInfo{Number: 63023, Org: "GTHost", IsHosting: true})
+	// Persist a stale hosting flag (false) for a GTHost ASN: after restart the
+	// flag must be recomputed from the current hosting list.
+	entry1.SetEgressASN(node.ASNInfo{Number: 63023, Org: "GTHost", IsHosting: false})
 	entry1.LastEgressUpdate.Store(egressUpdatedAt)
 	entry1.LastEgressUpdateAttempt.Store(egressAttemptAt)
 	entry1.LastLatencyProbeAttempt.Store(latencyAttemptAt)
