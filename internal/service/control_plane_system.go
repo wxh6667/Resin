@@ -101,6 +101,8 @@ var platformPatchAllowedFields = map[string]bool{
 	"reverse_proxy_fixed_account_header":   true,
 	"allocation_policy":                    true,
 	"passive_circuit_breaker_disabled":     true,
+	"exclude_hosting":                      true,
+	"asn_excludes":                         true,
 }
 
 var subscriptionPatchAllowedFields = map[string]bool{
