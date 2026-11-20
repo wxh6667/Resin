@@ -849,6 +849,11 @@ func restoreBootstrapNodeDynamics(
 		}
 		entry.SetEgressRegion(nd.EgressRegion)
 		entry.LastEgressUpdate.Store(nd.EgressUpdatedAtNs)
+		// Restore the probe-resolved ASN classification; without this the
+		// hosting filter loses all state on every restart until re-probed.
+		if nd.ASN != 0 {
+			entry.SetEgressASN(node.ASNInfo{Number: nd.ASN, Org: nd.ASNOrg, IsHosting: nd.IsHosting})
+		}
 	}
 	log.Printf("Loaded %d node dynamic states from cache.db", len(dynamics))
 	return nil

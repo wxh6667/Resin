@@ -106,6 +106,7 @@ func TestBootstrapRestart_RecoversTopologyAndStickyLease(t *testing.T) {
 
 	entry1.SetEgressIP(egressIP)
 	entry1.SetEgressRegion("hk")
+	entry1.SetEgressASN(node.ASNInfo{Number: 63023, Org: "GTHost", IsHosting: true})
 	entry1.LastEgressUpdate.Store(egressUpdatedAt)
 	entry1.LastEgressUpdateAttempt.Store(egressAttemptAt)
 	entry1.LastLatencyProbeAttempt.Store(latencyAttemptAt)
@@ -234,6 +235,15 @@ func TestBootstrapRestart_RecoversTopologyAndStickyLease(t *testing.T) {
 	}
 	if got := entry2.GetEgressRegion(); got != "hk" {
 		t.Fatalf("egress_region: got %q, want %q", got, "hk")
+	}
+	if got := entry2.GetEgressASN(); got != 63023 {
+		t.Fatalf("asn: got %d, want %d", got, 63023)
+	}
+	if got := entry2.GetEgressASNOrg(); got != "GTHost" {
+		t.Fatalf("asn_org: got %q, want %q", got, "GTHost")
+	}
+	if !entry2.GetEgressIsHosting() {
+		t.Fatal("is_hosting should be restored after restart")
 	}
 	if got := entry2.LastEgressUpdate.Load(); got != egressUpdatedAt {
 		t.Fatalf("egress_updated_at_ns: got %d, want %d", got, egressUpdatedAt)
