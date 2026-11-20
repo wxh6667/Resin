@@ -107,6 +107,8 @@ func (p *GlobalNodePool) applyFeedback(hash node.Hash, version uint64, f node.Fe
 		}
 		if f.Egress {
 			oldIP, oldRegion := e.GetEgressIP(), e.GetEgressRegion()
+			oldASN := e.GetEgressASN()
+			oldHosting := e.GetEgressIsHosting()
 			now := time.Now().UnixNano()
 			e.LastEgressUpdateAttempt.Store(now)
 			dynamic = true
@@ -119,7 +121,13 @@ func (p *GlobalNodePool) applyFeedback(hash node.Hash, version uint64, f node.Fe
 			} else if f.IP != nil && oldIP != *f.IP {
 				e.SetEgressRegion("")
 			}
-			dirty = dirty || oldIP != e.GetEgressIP() || oldRegion != e.GetEgressRegion()
+			if f.ASN != nil {
+				e.SetEgressASN(*f.ASN)
+			} else if f.IP != nil && oldIP != *f.IP {
+				e.SetEgressASN(node.ASNInfo{})
+			}
+			dirty = dirty || oldIP != e.GetEgressIP() || oldRegion != e.GetEgressRegion() ||
+				oldASN != e.GetEgressASN() || oldHosting != e.GetEgressIsHosting()
 		}
 		if f.LastError != nil {
 			e.SetLastError(*f.LastError)
@@ -161,6 +169,9 @@ func (p *GlobalNodePool) SnapshotNodeDynamic(hash node.Hash) *model.NodeDynamic 
 				LastLatencyProbeAttemptNs:          e.LastLatencyProbeAttempt.Load(),
 				LastAuthorityLatencyProbeAttemptNs: e.LastAuthorityLatencyProbeAttempt.Load(),
 				LastEgressUpdateAttemptNs:          e.LastEgressUpdateAttempt.Load(),
+				ASN:                               e.GetEgressASN(),
+				ASNOrg:                            e.GetEgressASNOrg(),
+				IsHosting:                         e.GetEgressIsHosting(),
 			}
 		}
 		return e, xsync.CancelOp

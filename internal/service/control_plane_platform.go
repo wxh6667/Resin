@@ -32,6 +32,8 @@ type PlatformResponse struct {
 	ReverseProxyFixedAccountHeader   string   `json:"reverse_proxy_fixed_account_header"`
 	AllocationPolicy                 string   `json:"allocation_policy"`
 	PassiveCircuitBreakerDisabled    bool     `json:"passive_circuit_breaker_disabled"`
+	ExcludeHosting                   bool     `json:"exclude_hosting"`
+	ASNExcludes                      []uint32 `json:"asn_excludes,omitempty"`
 	UpdatedAt                        string   `json:"updated_at"`
 }
 
@@ -50,6 +52,8 @@ func platformToResponse(p model.Platform) PlatformResponse {
 		ReverseProxyFixedAccountHeader:   fixedHeader,
 		AllocationPolicy:                 p.AllocationPolicy,
 		PassiveCircuitBreakerDisabled:    p.PassiveCircuitBreakerDisabled,
+		ExcludeHosting:                   p.ExcludeHosting,
+		ASNExcludes:                      append([]uint32(nil), p.ASNExcludes...),
 		UpdatedAt:                        time.Unix(0, p.UpdatedAtNs).UTC().Format(time.RFC3339Nano),
 	}
 }
@@ -76,6 +80,8 @@ type platformConfig struct {
 	ReverseProxyFixedAccountHeader   string
 	AllocationPolicy                 string
 	PassiveCircuitBreakerDisabled    bool
+	ExcludeHosting                   bool
+	ASNExcludes                      []uint32
 }
 
 func normalizePlatformMissAction(raw string) string {
@@ -121,6 +127,8 @@ func platformConfigFromModel(mp model.Platform) platformConfig {
 		ReverseProxyFixedAccountHeader:   normalizeHeaderFieldName(mp.ReverseProxyFixedAccountHeader),
 		AllocationPolicy:                 mp.AllocationPolicy,
 		PassiveCircuitBreakerDisabled:    mp.PassiveCircuitBreakerDisabled,
+		ExcludeHosting:                   mp.ExcludeHosting,
+		ASNExcludes:                      append([]uint32(nil), mp.ASNExcludes...),
 	}
 }
 
@@ -136,6 +144,8 @@ func (cfg platformConfig) toModel(id string, updatedAtNs int64) model.Platform {
 		ReverseProxyFixedAccountHeader:   cfg.ReverseProxyFixedAccountHeader,
 		AllocationPolicy:                 cfg.AllocationPolicy,
 		PassiveCircuitBreakerDisabled:    cfg.PassiveCircuitBreakerDisabled,
+		ExcludeHosting:                   cfg.ExcludeHosting,
+		ASNExcludes:                      append([]uint32(nil), cfg.ASNExcludes...),
 		UpdatedAtNs:                      updatedAtNs,
 	}
 }
@@ -156,6 +166,8 @@ func (cfg platformConfig) toRuntime(id string) (*platform.Platform, error) {
 		cfg.ReverseProxyFixedAccountHeader,
 		cfg.AllocationPolicy,
 		cfg.PassiveCircuitBreakerDisabled,
+		cfg.ExcludeHosting,
+		cfg.ASNExcludes,
 	), nil
 }
 
@@ -334,6 +346,8 @@ type CreatePlatformRequest struct {
 	ReverseProxyFixedAccountHeader   *string  `json:"reverse_proxy_fixed_account_header"`
 	AllocationPolicy                 *string  `json:"allocation_policy"`
 	PassiveCircuitBreakerDisabled    *bool    `json:"passive_circuit_breaker_disabled"`
+	ExcludeHosting                   *bool    `json:"exclude_hosting"`
+	ASNExcludes                      []uint32 `json:"asn_excludes"`
 }
 
 // CreatePlatform creates a new platform.
@@ -390,6 +404,12 @@ func (s *ControlPlaneService) CreatePlatform(req CreatePlatformRequest) (*Platfo
 	}
 	if req.PassiveCircuitBreakerDisabled != nil {
 		cfg.PassiveCircuitBreakerDisabled = *req.PassiveCircuitBreakerDisabled
+	}
+	if req.ExcludeHosting != nil {
+		cfg.ExcludeHosting = *req.ExcludeHosting
+	}
+	if req.ASNExcludes != nil {
+		cfg.ASNExcludes = req.ASNExcludes
 	}
 	if err := validatePlatformConfig(&cfg, true); err != nil {
 		return nil, err
@@ -508,6 +528,16 @@ func (s *ControlPlaneService) UpdatePlatform(id string, patchJSON json.RawMessag
 	} else if ok {
 		cfg.PassiveCircuitBreakerDisabled = disabled
 	}
+	if exclude, ok, err := patch.optionalBool("exclude_hosting"); err != nil {
+		return nil, err
+	} else if ok {
+		cfg.ExcludeHosting = exclude
+	}
+	if excludes, ok, err := patch.optionalUint32Slice("asn_excludes"); err != nil {
+		return nil, err
+	} else if ok {
+		cfg.ASNExcludes = excludes
+	}
 	if err := validatePlatformConfig(&cfg, regionFiltersPatched); err != nil {
 		return nil, err
 	}
@@ -607,6 +637,9 @@ type NodeSummary struct {
 	LastAuthorityLatencyProbeAttempt string    `json:"last_authority_latency_probe_attempt,omitempty"`
 	ReferenceLatencyMs               *float64  `json:"reference_latency_ms,omitempty"`
 	LastEgressUpdateAttempt          string    `json:"last_egress_update_attempt,omitempty"`
+	ASN                              uint32    `json:"asn,omitempty"`
+	ASNOrg                           string    `json:"asn_org,omitempty"`
+	IsHosting                        bool      `json:"is_hosting"`
 	Tags                             []NodeTag `json:"tags"`
 }
 
@@ -664,6 +697,9 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 		if s.GeoIP != nil {
 			ns.Region = entry.GetRegion(s.GeoIP.Lookup)
 		}
+		ns.ASN = entry.GetEgressASN()
+		ns.ASNOrg = entry.GetEgressASNOrg()
+		ns.IsHosting = entry.GetEgressIsHosting()
 	}
 
 	if leu := entry.LastEgressUpdate.Load(); leu > 0 {

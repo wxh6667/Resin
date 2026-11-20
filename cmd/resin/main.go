@@ -29,6 +29,7 @@ import (
 	"github.com/Resinat/Resin/internal/state"
 	"github.com/Resinat/Resin/internal/subscription"
 	"github.com/Resinat/Resin/internal/topology"
+	"github.com/Resinat/Resin/internal/verified"
 )
 
 type topologyRuntime struct {
@@ -204,6 +205,7 @@ func newTopologyRuntime(
 	envCfg *config.EnvConfig,
 	runtimeCfg *atomic.Pointer[config.RuntimeConfig],
 	geoSvc *geoip.Service,
+	asnReader geoip.ASNReader,
 	downloader netutil.Downloader,
 	onProbeConnLifecycle func(netutil.ConnLifecycleOp),
 	onNodeRemoved func(node.Hash),
@@ -256,6 +258,10 @@ func newTopologyRuntime(
 		EnsureOutbound: outboundMgr.EnsureNodeOutbound,
 		Pool:           pool,
 		Concurrency:    envCfg.ProbeConcurrency,
+		ASNLookup: func(ip netip.Addr) node.ASNInfo {
+			res := asnReader.Lookup(ip)
+			return node.ASNInfo{Number: res.Number, Org: res.Org, IsHosting: res.IsHosting}
+		},
 		Fetcher: func(hash node.Hash, url string) (netutil.OutboundHTTPResult, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), envCfg.ProbeTimeout)
 			defer cancel()
@@ -317,10 +323,28 @@ func newTopologyRuntime(
 	})
 	log.Println("ProbeManager initialized")
 
+	verifiedUploader, err := verified.NewUploader(verified.Config{
+		Endpoint: envCfg.VerifiedUploadURL,
+		Token:    envCfg.VerifiedUploadToken,
+		Window:   envCfg.VerifiedUploadWindow,
+		Timeout:  envCfg.VerifiedUploadTimeout,
+	}, pool, func(entry *node.NodeEntry) (float64, bool) {
+		return node.AverageEWMAForDomainsMs(entry, runtimeConfigSnapshot(runtimeCfg).LatencyAuthorities)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("verified uploader: %w", err)
+	}
+	if verifiedUploader.Enabled() {
+		log.Printf("Verified node upload enabled: %s (window=%s)", envCfg.VerifiedUploadURL, envCfg.VerifiedUploadWindow)
+	}
+
 	scheduler := topology.NewSubscriptionScheduler(topology.SchedulerConfig{
 		SubManager: subManager,
 		Pool:       pool,
 		Downloader: downloader,
+		OnPullStarted: func(*subscription.Subscription) {
+			verifiedUploader.Trigger()
+		},
 		OnSubReenabledNode: func(hash node.Hash) {
 			outboundMgr.EnsureNodeOutbound(hash)
 			probeMgr.TriggerImmediateEgressProbe(hash)

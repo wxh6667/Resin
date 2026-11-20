@@ -21,6 +21,13 @@ func TestSubscriptionChainMigrationAndConstraints(t *testing.T) {
 	if _, err := repo.db.Exec(string(down)); err != nil {
 		t.Fatal(err)
 	}
+	down11, err := migrationsFS.ReadFile("migrations/state/000011_platforms_asn_filter.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(string(down11)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := repo.db.Exec("UPDATE schema_migrations SET version = 9"); err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +79,13 @@ func TestCacheChainMigrationPreservesMeasurements(t *testing.T) {
 	if _, err := repo.db.Exec(string(down)); err != nil {
 		t.Fatal(err)
 	}
+	down4, err := migrationsFS.ReadFile("migrations/cache/000004_nodes_dynamic_asn.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(string(down4)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := repo.db.Exec(`
 		UPDATE schema_migrations SET version = 2;
 		INSERT INTO nodes_dynamic (hash, egress_ip) VALUES ('node', '203.0.113.1');
@@ -92,7 +106,7 @@ func TestCacheChainMigrationPreservesMeasurements(t *testing.T) {
 		t.Fatalf("migrated latency: %v, error=%v", latencies, err)
 	}
 	var version int
-	if err := repo.db.QueryRow("SELECT version FROM schema_migrations").Scan(&version); err != nil || version != 3 {
+	if err := repo.db.QueryRow("SELECT version FROM schema_migrations").Scan(&version); err != nil || version != 4 {
 		t.Fatalf("cache version=%d, error=%v", version, err)
 	}
 	if _, err := repo.db.Exec(string(down)); err != nil {

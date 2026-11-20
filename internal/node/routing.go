@@ -74,6 +74,7 @@ type Feedback struct {
 	Egress     bool
 	IP         *netip.Addr
 	Region     *string
+	ASN        *ASNInfo // egress-IP autonomous-system classification; nil = keep existing
 	LastError  *string
 	PlatformID string
 }

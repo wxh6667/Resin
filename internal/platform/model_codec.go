@@ -71,6 +71,8 @@ func NewConfiguredPlatform(
 	fixedAccountHeader string,
 	allocationPolicy string,
 	passiveCircuitBreakerDisabled bool,
+	excludeHosting bool,
+	asnExcludes []uint32,
 ) *Platform {
 	normalizedFixedHeaders, fixedHeaders, err := NormalizeFixedAccountHeaders(fixedAccountHeader)
 	if err != nil {
@@ -85,7 +87,21 @@ func NewConfiguredPlatform(
 	plat.ReverseProxyFixedAccountHeaders = append([]string(nil), fixedHeaders...)
 	plat.AllocationPolicy = ParseAllocationPolicy(allocationPolicy)
 	plat.PassiveCircuitBreakerDisabled = passiveCircuitBreakerDisabled
+	plat.ExcludeHosting = excludeHosting
+	plat.ASNExcludes = asnExcludeSet(asnExcludes)
 	return plat
+}
+
+// asnExcludeSet converts the persisted exclude list to a lookup set.
+func asnExcludeSet(list []uint32) map[uint32]struct{} {
+	if len(list) == 0 {
+		return nil
+	}
+	out := make(map[uint32]struct{}, len(list))
+	for _, asn := range list {
+		out[asn] = struct{}{}
+	}
+	return out
 }
 
 // CompileModelRegexFilters compiles regex filters from persisted model values.
@@ -141,5 +157,7 @@ func BuildFromModel(mp model.Platform) (*Platform, error) {
 		fixedHeader,
 		mp.AllocationPolicy,
 		mp.PassiveCircuitBreakerDisabled,
+		mp.ExcludeHosting,
+		append([]uint32(nil), mp.ASNExcludes...),
 	), nil
 }

@@ -539,13 +539,16 @@ func (s *ControlPlaneService) DeleteSubscription(id string) error {
 	return deleteErr
 }
 
-// RefreshSubscription triggers an immediate subscription refresh (blocks).
+// RefreshSubscription triggers an immediate subscription refresh in the
+// background. Large subscriptions can take minutes to fetch and apply, so the
+// API call returns as soon as the refresh is scheduled; progress is visible
+// through the subscription's last_checked/last_updated/last_error fields.
 func (s *ControlPlaneService) RefreshSubscription(id string) error {
 	sub := s.SubMgr.Lookup(id)
 	if sub == nil {
 		return notFound("subscription not found")
 	}
-	s.Scheduler.UpdateSubscription(sub)
+	go s.Scheduler.UpdateSubscription(sub)
 	return nil
 }
 

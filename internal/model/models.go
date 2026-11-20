@@ -15,6 +15,8 @@ type Platform struct {
 	ReverseProxyFixedAccountHeader   string `json:"reverse_proxy_fixed_account_header"`
 	AllocationPolicy                 string `json:"allocation_policy"`
 	PassiveCircuitBreakerDisabled    bool   `json:"passive_circuit_breaker_disabled"`
+	ExcludeHosting                   bool   `json:"exclude_hosting"`
+	ASNExcludes                      []uint32 `json:"asn_excludes,omitempty"`
 	UpdatedAtNs                      int64  `json:"updated_at_ns"`
 }
 
@@ -78,6 +80,9 @@ type NodeDynamic struct {
 	LastLatencyProbeAttemptNs          int64  `json:"last_latency_probe_attempt_ns"`
 	LastAuthorityLatencyProbeAttemptNs int64  `json:"last_authority_latency_probe_attempt_ns"`
 	LastEgressUpdateAttemptNs          int64  `json:"last_egress_update_attempt_ns"`
+	ASN                                uint32 `json:"asn"`
+	ASNOrg                             string `json:"asn_org"`
+	IsHosting                          bool   `json:"is_hosting"`
 }
 
 // NodeLatency holds per-domain latency statistics for a node.

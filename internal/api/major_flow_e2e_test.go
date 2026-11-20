@@ -249,33 +249,20 @@ func TestMajorFlow_E2E_LocalProxyAndSubscriptionProvider(t *testing.T) {
 	if refreshSubRec.Code != http.StatusOK {
 		t.Fatalf("refresh subscription status: got %d, want %d, body=%s", refreshSubRec.Code, http.StatusOK, refreshSubRec.Body.String())
 	}
-	if subHits.Load() == 0 {
-		t.Fatal("subscription source should be requested during refresh")
+	// Refresh runs in the background; wait for the pull and the applied node.
+	pullDeadline := time.Now().Add(5 * time.Second)
+	for subHits.Load() == 0 {
+		if time.Now().After(pullDeadline) {
+			t.Fatal("subscription source should be requested during refresh")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
-	nodesRec := doJSONRequest(t, h.apiServer, http.MethodGet, "/api/v1/nodes?subscription_id="+subID, nil, true)
-	if nodesRec.Code != http.StatusOK {
-		t.Fatalf("list nodes status: got %d, want %d, body=%s", nodesRec.Code, http.StatusOK, nodesRec.Body.String())
-	}
-	nodesBody := decodeJSONMap(t, nodesRec)
-	nodes, ok := nodesBody["items"].([]any)
-	if !ok {
-		t.Fatalf("nodes.items type: got %T", nodesBody["items"])
-	}
-	if len(nodes) != 1 {
-		t.Fatalf("expected 1 node after refresh, got %d, body=%s", len(nodes), nodesRec.Body.String())
-	}
-	nodeItem, ok := nodes[0].(map[string]any)
-	if !ok {
-		t.Fatalf("node item type: got %T", nodes[0])
-	}
+	nodeItem := waitForSingleNodeWithOutbound(t, h.apiServer, subID)
 	wantHash := node.HashFromRawOptions([]byte(rawOutbound)).Hex()
 	gotHash, _ := nodeItem["node_hash"].(string)
 	if gotHash != wantHash {
 		t.Fatalf("node hash: got %q, want %q", gotHash, wantHash)
-	}
-	if hasOutbound, _ := nodeItem["has_outbound"].(bool); !hasOutbound {
-		t.Fatalf("node should have outbound after refresh callback, node=%v", nodeItem)
 	}
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

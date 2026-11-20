@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -19,6 +20,10 @@ type EnvConfig struct {
 	CacheDir string
 	StateDir string
 	LogDir   string
+
+	// ASN / IP reputation
+	ASNDBPath   string // GeoLite2-ASN mmdb; missing file disables the feature
+	HostingASNs string // comma-separated extra hosting AS numbers
 
 	// Network
 	ListenAddress string
@@ -58,6 +63,12 @@ type EnvConfig struct {
 	AdminToken  string
 	ProxyToken  string
 
+	// Verified-node backflow upload (disabled unless URL and token are set)
+	VerifiedUploadURL     string
+	VerifiedUploadToken   string
+	VerifiedUploadWindow  time.Duration
+	VerifiedUploadTimeout time.Duration
+
 	// Metrics
 	MetricThroughputIntervalSeconds   int
 	MetricThroughputRetentionSeconds  int
@@ -88,6 +99,8 @@ func LoadEnvConfig() (*EnvConfig, error) {
 
 	// --- Directories ---
 	cfg.CacheDir = envStr("RESIN_CACHE_DIR", "/var/cache/resin")
+	cfg.ASNDBPath = envStr("RESIN_ASN_DB_PATH", cfg.CacheDir+"/GeoLite2-ASN.mmdb")
+	cfg.HostingASNs = envStr("RESIN_HOSTING_ASN", "")
 	cfg.StateDir = envStr("RESIN_STATE_DIR", "/var/lib/resin")
 	cfg.LogDir = envStr("RESIN_LOG_DIR", "/var/log/resin")
 	cfg.ListenAddress = strings.TrimSpace(envStr("RESIN_LISTEN_ADDRESS", "0.0.0.0"))
@@ -145,6 +158,12 @@ func LoadEnvConfig() (*EnvConfig, error) {
 	cfg.AdminToken = adminToken
 	cfg.ProxyToken = proxyToken
 
+	// --- Verified-node backflow upload ---
+	cfg.VerifiedUploadURL = strings.TrimSpace(envStr("RESIN_VERIFIED_UPLOAD_URL", ""))
+	cfg.VerifiedUploadToken = strings.TrimSpace(envStr("RESIN_VERIFIED_UPLOAD_TOKEN", ""))
+	cfg.VerifiedUploadWindow = envDuration("RESIN_VERIFIED_UPLOAD_WINDOW", 2*time.Hour, &errs)
+	cfg.VerifiedUploadTimeout = envDuration("RESIN_VERIFIED_UPLOAD_TIMEOUT", 30*time.Second, &errs)
+
 	// --- Metrics ---
 	cfg.MetricThroughputIntervalSeconds = envInt("RESIN_METRIC_THROUGHPUT_INTERVAL_SECONDS", 2, &errs)
 	cfg.MetricThroughputRetentionSeconds = envInt("RESIN_METRIC_THROUGHPUT_RETENTION_SECONDS", 3600, &errs)
@@ -185,6 +204,21 @@ func LoadEnvConfig() (*EnvConfig, error) {
 	}
 	if cfg.ListenAddress == "" {
 		errs = append(errs, "RESIN_LISTEN_ADDRESS must not be empty")
+	}
+	if cfg.VerifiedUploadURL != "" {
+		parsed, err := url.Parse(cfg.VerifiedUploadURL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			errs = append(errs, "RESIN_VERIFIED_UPLOAD_URL must be an absolute http(s) URL")
+		}
+		if cfg.VerifiedUploadToken == "" {
+			errs = append(errs, "RESIN_VERIFIED_UPLOAD_TOKEN is required when RESIN_VERIFIED_UPLOAD_URL is set")
+		}
+		if cfg.VerifiedUploadWindow <= 0 {
+			errs = append(errs, "RESIN_VERIFIED_UPLOAD_WINDOW must be positive")
+		}
+		if cfg.VerifiedUploadTimeout <= 0 {
+			errs = append(errs, "RESIN_VERIFIED_UPLOAD_TIMEOUT must be positive")
+		}
 	}
 
 	validatePort("RESIN_PORT", cfg.ResinPort, &errs)

@@ -38,6 +38,8 @@ export const platformFormSchema = z.object({
   reverse_proxy_fixed_account_header: z.string().optional(),
   allocation_policy: z.enum(allocationPolicies),
   passive_circuit_breaker_disabled: z.boolean(),
+  exclude_hosting: z.boolean(),
+  asn_excludes_text: z.string().optional(),
 }).superRefine((value, ctx) => {
   if (
     value.reverse_proxy_empty_account_behavior === "FIXED_HEADER" &&
@@ -63,6 +65,8 @@ export const defaultPlatformFormValues: PlatformFormValues = {
   reverse_proxy_fixed_account_header: "Authorization",
   allocation_policy: "BALANCED",
   passive_circuit_breaker_disabled: false,
+  exclude_hosting: false,
+  asn_excludes_text: "",
 };
 
 export function platformToFormValues(platform: Platform): PlatformFormValues {
@@ -79,6 +83,8 @@ export function platformToFormValues(platform: Platform): PlatformFormValues {
     reverse_proxy_fixed_account_header: platform.reverse_proxy_fixed_account_header,
     allocation_policy: platform.allocation_policy,
     passive_circuit_breaker_disabled: platform.passive_circuit_breaker_disabled,
+    exclude_hosting: platform.exclude_hosting ?? false,
+    asn_excludes_text: (platform.asn_excludes ?? []).join(", "),
   };
 }
 
@@ -92,6 +98,13 @@ function toPlatformPayloadBase(values: PlatformFormValues) {
     reverse_proxy_fixed_account_header: parseHeaderLines(values.reverse_proxy_fixed_account_header).join("\n"),
     allocation_policy: values.allocation_policy,
     passive_circuit_breaker_disabled: values.passive_circuit_breaker_disabled,
+    exclude_hosting: values.exclude_hosting,
+    asn_excludes: (values.asn_excludes_text || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+      .map((item) => Number(item))
+      .filter((item) => Number.isInteger(item) && item > 0),
   };
 }
 

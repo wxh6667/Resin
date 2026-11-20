@@ -19,6 +19,9 @@ export type NodeSummary = {
   egress_ip?: string;
   reference_latency_ms?: number;
   region?: string;
+  asn?: number;
+  asn_org?: string;
+  is_hosting?: boolean;
   last_egress_update?: string;
   last_latency_probe_attempt?: string;
   last_authority_latency_probe_attempt?: string;

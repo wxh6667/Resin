@@ -50,6 +50,35 @@ func decodeStringSliceJSON(raw string) ([]string, error) {
 	return out, nil
 }
 
+func encodeUint32SliceJSON(values []uint32) (string, error) {
+	if values == nil {
+		values = []uint32{}
+	}
+	data, err := json.Marshal(values)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func decodeUint32SliceJSON(raw string) ([]uint32, error) {
+	var out []uint32
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []uint32{}
+	}
+	return out, nil
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
 // --- system_config ---
 
 // GetSystemConfig loads the runtime config and version from state.db.
@@ -117,6 +146,11 @@ func (r *StateRepo) UpsertPlatform(p model.Platform) error {
 	if !platform.AllocationPolicy(p.AllocationPolicy).IsValid() {
 		return fmt.Errorf("allocation_policy: invalid value %q", p.AllocationPolicy)
 	}
+
+	asnExcludesJSON, err := encodeUint32SliceJSON(p.ASNExcludes)
+	if err != nil {
+		return fmt.Errorf("encode platform %s asn_excludes_json: %w", p.ID, err)
+	}
 	behavior := platform.ReverseProxyEmptyAccountBehavior(strings.TrimSpace(p.ReverseProxyEmptyAccountBehavior))
 	if behavior == "" {
 		behavior = platform.ReverseProxyEmptyAccountBehaviorRandom
@@ -152,8 +186,9 @@ func (r *StateRepo) UpsertPlatform(p model.Platform) error {
 		INSERT INTO platforms (id, name, sticky_ttl_ns, regex_filters_json, region_filters_json,
 		                       reverse_proxy_miss_action, reverse_proxy_empty_account_behavior,
 		                       reverse_proxy_fixed_account_header, allocation_policy,
-		                       passive_circuit_breaker_disabled, updated_at_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                       passive_circuit_breaker_disabled, exclude_hosting, asn_excludes_json,
+		                       updated_at_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name                     = excluded.name,
 			sticky_ttl_ns            = excluded.sticky_ttl_ns,
@@ -164,10 +199,12 @@ func (r *StateRepo) UpsertPlatform(p model.Platform) error {
 			reverse_proxy_fixed_account_header   = excluded.reverse_proxy_fixed_account_header,
 			allocation_policy        = excluded.allocation_policy,
 			passive_circuit_breaker_disabled = excluded.passive_circuit_breaker_disabled,
+			exclude_hosting                    = excluded.exclude_hosting,
+			asn_excludes_json                  = excluded.asn_excludes_json,
 			updated_at_ns            = excluded.updated_at_ns
 	`, p.ID, p.Name, p.StickyTTLNs, regexFiltersJSON, regionFiltersJSON,
 		p.ReverseProxyMissAction, p.ReverseProxyEmptyAccountBehavior, p.ReverseProxyFixedAccountHeader,
-		p.AllocationPolicy, p.PassiveCircuitBreakerDisabled, p.UpdatedAtNs)
+		p.AllocationPolicy, p.PassiveCircuitBreakerDisabled, boolToInt(p.ExcludeHosting), asnExcludesJSON, p.UpdatedAtNs)
 	if err != nil {
 		if isSQLiteUniqueConstraint(err) {
 			return fmt.Errorf("%w: platform name already exists", ErrConflict)
@@ -223,21 +260,28 @@ func (r *StateRepo) GetPlatform(id string) (*model.Platform, error) {
 	row := r.db.QueryRow(`SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json,
 			reverse_proxy_miss_action, reverse_proxy_empty_account_behavior,
 			reverse_proxy_fixed_account_header, allocation_policy,
-			passive_circuit_breaker_disabled, updated_at_ns
+			passive_circuit_breaker_disabled, exclude_hosting, asn_excludes_json, updated_at_ns
 			FROM platforms WHERE id = ?`, id)
 
 	var p model.Platform
-	var regexFiltersJSON, regionFiltersJSON string
-	var passiveCircuitBreakerDisabled int
+	var regexFiltersJSON, regionFiltersJSON, asnExcludesJSON string
+	var passiveCircuitBreakerDisabled, excludeHosting int
 	if err := row.Scan(&p.ID, &p.Name, &p.StickyTTLNs, &regexFiltersJSON,
 		&regionFiltersJSON, &p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
-		&p.ReverseProxyFixedAccountHeader, &p.AllocationPolicy, &passiveCircuitBreakerDisabled, &p.UpdatedAtNs); err != nil {
+		&p.ReverseProxyFixedAccountHeader, &p.AllocationPolicy, &passiveCircuitBreakerDisabled,
+		&excludeHosting, &asnExcludesJSON, &p.UpdatedAtNs); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
 	p.PassiveCircuitBreakerDisabled = passiveCircuitBreakerDisabled != 0
+	p.ExcludeHosting = excludeHosting != 0
+	asnExcludes, err := decodeUint32SliceJSON(asnExcludesJSON)
+	if err != nil {
+		return nil, fmt.Errorf("decode platform %s asn_excludes_json: %w", p.ID, err)
+	}
+	p.ASNExcludes = asnExcludes
 	regexFilters, err := decodeStringSliceJSON(regexFiltersJSON)
 	if err != nil {
 		return nil, fmt.Errorf("decode platform %s regex_filters_json: %w", p.ID, err)
@@ -253,7 +297,7 @@ func (r *StateRepo) GetPlatform(id string) (*model.Platform, error) {
 
 // ListPlatforms returns all platforms.
 func (r *StateRepo) ListPlatforms() ([]model.Platform, error) {
-	rows, err := r.db.Query("SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json, reverse_proxy_miss_action, reverse_proxy_empty_account_behavior, reverse_proxy_fixed_account_header, allocation_policy, passive_circuit_breaker_disabled, updated_at_ns FROM platforms")
+	rows, err := r.db.Query("SELECT id, name, sticky_ttl_ns, regex_filters_json, region_filters_json, reverse_proxy_miss_action, reverse_proxy_empty_account_behavior, reverse_proxy_fixed_account_header, allocation_policy, passive_circuit_breaker_disabled, exclude_hosting, asn_excludes_json, updated_at_ns FROM platforms")
 	if err != nil {
 		return nil, err
 	}
@@ -262,14 +306,21 @@ func (r *StateRepo) ListPlatforms() ([]model.Platform, error) {
 	var result []model.Platform
 	for rows.Next() {
 		var p model.Platform
-		var regexFiltersJSON, regionFiltersJSON string
-		var passiveCircuitBreakerDisabled int
+		var regexFiltersJSON, regionFiltersJSON, asnExcludesJSON string
+		var passiveCircuitBreakerDisabled, excludeHosting int
 		if err := rows.Scan(&p.ID, &p.Name, &p.StickyTTLNs, &regexFiltersJSON,
 			&regionFiltersJSON, &p.ReverseProxyMissAction, &p.ReverseProxyEmptyAccountBehavior,
-			&p.ReverseProxyFixedAccountHeader, &p.AllocationPolicy, &passiveCircuitBreakerDisabled, &p.UpdatedAtNs); err != nil {
+			&p.ReverseProxyFixedAccountHeader, &p.AllocationPolicy, &passiveCircuitBreakerDisabled,
+			&excludeHosting, &asnExcludesJSON, &p.UpdatedAtNs); err != nil {
 			return nil, err
 		}
 		p.PassiveCircuitBreakerDisabled = passiveCircuitBreakerDisabled != 0
+		p.ExcludeHosting = excludeHosting != 0
+		asnExcludes, err := decodeUint32SliceJSON(asnExcludesJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decode platform %s asn_excludes_json: %w", p.ID, err)
+		}
+		p.ASNExcludes = asnExcludes
 		regexFilters, err := decodeStringSliceJSON(regexFiltersJSON)
 		if err != nil {
 			return nil, fmt.Errorf("decode platform %s regex_filters_json: %w", p.ID, err)

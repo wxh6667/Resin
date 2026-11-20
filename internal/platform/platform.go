@@ -31,6 +31,12 @@ type Platform struct {
 	// Filter configuration.
 	RegexFilters  node.TagFilter
 	RegionFilters []string // lowercase ISO codes, supports negation "!xx"
+	// ExcludeHosting drops nodes whose egress ASN is a known hosting/cloud
+	// provider (built-in list + RESIN_HOSTING_ASN). ASNExcludes drops the
+	// listed AS numbers regardless of the hosting flag. An unknown ASN (0)
+	// is never excluded, so a missing ASN database cannot empty the pool.
+	ExcludeHosting bool
+	ASNExcludes     map[uint32]struct{}
 
 	// Other config fields.
 	StickyTTLNs                      int64
@@ -149,7 +155,21 @@ func (p *Platform) evaluateNode(
 		}
 	}
 
-	// 5. Has at least one latency record.
+	// 5. ASN / hosting filter (when configured). Unknown ASN passes: the
+	// probe may not have classified the egress IP yet.
+	if p.ExcludeHosting || len(p.ASNExcludes) > 0 {
+		asn := entry.GetEgressASN()
+		if asn != 0 {
+			if p.ExcludeHosting && entry.GetEgressIsHosting() {
+				return false
+			}
+			if _, ok := p.ASNExcludes[asn]; ok {
+				return false
+			}
+		}
+	}
+
+	// 6. Has at least one latency record.
 	if !entry.HasLatency() {
 		return false
 	}

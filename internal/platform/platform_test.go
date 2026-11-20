@@ -350,3 +350,84 @@ func TestPlatform_FullRebuild_ClearsOld(t *testing.T) {
 		t.Fatal("h2 should have been removed by rebuild")
 	}
 }
+
+func TestPlatform_EvaluateNode_HostingFilter(t *testing.T) {
+	h := makeHash(`{"type":"ss"}`)
+
+	hostingEntry := makeFullyRoutableEntry(h, "sub1")
+	hostingEntry.SetEgressASN(node.ASNInfo{Number: 31898, Org: "Oracle Cloud", IsHosting: true})
+
+	ispEntry := makeFullyRoutableEntry(h, "sub1")
+	ispEntry.SetEgressASN(node.ASNInfo{Number: 64512, Org: "Example ISP"})
+
+	unknownEntry := makeFullyRoutableEntry(h, "sub1") // no ASN classified
+
+	t.Run("exclude_hosting drops hosting nodes", func(t *testing.T) {
+		p := NewPlatform("p1", "Test", nil, nil)
+		p.ExcludeHosting = true
+		for _, tc := range []struct {
+			name  string
+			entry *node.NodeEntry
+			want  int
+		}{
+			{"hosting", hostingEntry, 0},
+			{"isp", ispEntry, 1},
+			{"unknown", unknownEntry, 1}, // unknown ASN must never be excluded
+		} {
+			p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
+				fn(h, tc.entry)
+			}, alwaysLookup, usGeoLookup)
+			if got := p.View().Size(); got != tc.want {
+				t.Fatalf("%s: routable=%d want %d", tc.name, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("asn_excludes drops listed AS only", func(t *testing.T) {
+		p := NewPlatform("p2", "Test", nil, nil)
+		p.ASNExcludes = map[uint32]struct{}{31898: {}}
+		for _, tc := range []struct {
+			name  string
+			entry *node.NodeEntry
+			want  int
+		}{
+			{"oracle", hostingEntry, 0},
+			{"isp", ispEntry, 1},
+			{"unknown", unknownEntry, 1},
+		} {
+			p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
+				fn(h, tc.entry)
+			}, alwaysLookup, usGeoLookup)
+			if got := p.View().Size(); got != tc.want {
+				t.Fatalf("%s: routable=%d want %d", tc.name, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("no filters keep hosting nodes", func(t *testing.T) {
+		p := NewPlatform("p3", "Test", nil, nil)
+		p.FullRebuild(func(fn func(node.Hash, *node.NodeEntry) bool) {
+			fn(h, hostingEntry)
+		}, alwaysLookup, usGeoLookup)
+		if got := p.View().Size(); got != 1 {
+			t.Fatalf("routable=%d want 1", got)
+		}
+	})
+}
+
+func TestNodeEntry_ASNAccessors(t *testing.T) {
+	e := makeFullyRoutableEntry(makeHash(`{"type":"ss"}`), "sub1")
+	if e.GetEgressASN() != 0 || e.GetEgressIsHosting() {
+		t.Fatal("fresh entry must classify as unknown and not hosting")
+	}
+	e.SetEgressASN(node.ASNInfo{Number: 24940, Org: "Hetzner", IsHosting: true})
+	if e.GetEgressASN() != 24940 || !e.GetEgressIsHosting() || e.GetEgressASNOrg() != "Hetzner" {
+		t.Fatalf("unexpected classification: asn=%d org=%q hosting=%v",
+			e.GetEgressASN(), e.GetEgressASNOrg(), e.GetEgressIsHosting())
+	}
+	// Hosting flag only counts with a known ASN: zero number is never hosting.
+	e.SetEgressASN(node.ASNInfo{Number: 0, IsHosting: true})
+	if e.GetEgressIsHosting() {
+		t.Fatal("ASN 0 must never classify as hosting")
+	}
+}

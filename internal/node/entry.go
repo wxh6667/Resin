@@ -49,6 +49,9 @@ type NodeEntry struct {
 	CircuitGeneration atomic.Uint64              // advances on each circuit opening; runtime only
 	egressIP          atomic.Pointer[netip.Addr] // nil before first store
 	egressRegion      atomic.Pointer[string]     // lowercase country code from probe trace; nil when unknown
+	egressASN         atomic.Uint32              // 0 = unknown; AS number of the egress IP
+	egressASNOrg      atomic.Pointer[string]     // ASN org name; nil when unknown
+	egressIsHosting   atomic.Bool                // true when the egress ASN is a known hosting/cloud provider
 	LastEgressUpdate  atomic.Int64               // unix-nano of last successful egress-IP sample
 	// Probe-attempt timestamps (unix-nano). These are updated regardless of
 	// probe success/failure, and are used by probe schedulers.
@@ -301,6 +304,47 @@ func (e *NodeEntry) SetEgressRegion(region string) {
 		return
 	}
 	e.egressRegion.Store(&region)
+}
+
+// ASNInfo is the autonomous-system classification of a node's egress IP,
+// resolved from the local GeoLite2-ASN database during egress probing.
+type ASNInfo struct {
+	Number    uint32
+	Org       string
+	IsHosting bool
+}
+
+// GetEgressASN returns the node's stored egress AS number, 0 when unknown.
+func (e *NodeEntry) GetEgressASN() uint32 { return e.egressASN.Load() }
+
+// GetEgressASNOrg returns the stored ASN org name, empty when unknown.
+func (e *NodeEntry) GetEgressASNOrg() string {
+	if ptr := e.egressASNOrg.Load(); ptr != nil {
+		return *ptr
+	}
+	return ""
+}
+
+// GetEgressIsHosting reports whether the egress ASN is a known hosting/cloud
+// provider. Unknown ASN (0) is never classified as hosting: a missing or
+// stale database must not empty the pool.
+func (e *NodeEntry) GetEgressIsHosting() bool {
+	if e.egressASN.Load() == 0 {
+		return false
+	}
+	return e.egressIsHosting.Load()
+}
+
+// SetEgressASN stores the probe-resolved ASN classification of the egress IP.
+func (e *NodeEntry) SetEgressASN(info ASNInfo) {
+	e.egressASN.Store(info.Number)
+	if strings.TrimSpace(info.Org) == "" {
+		e.egressASNOrg.Store(nil)
+	} else {
+		org := info.Org
+		e.egressASNOrg.Store(&org)
+	}
+	e.egressIsHosting.Store(info.Number != 0 && info.IsHosting)
 }
 
 // GetRegion resolves a node region using explicit probe metadata first,

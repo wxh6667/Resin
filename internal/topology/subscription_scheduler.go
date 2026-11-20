@@ -1,10 +1,13 @@
 package topology
 
 import (
+	"bytes"
 	"context"
 	"log"
 	"runtime"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Resinat/Resin/internal/netutil"
@@ -29,9 +32,16 @@ type SubscriptionScheduler struct {
 
 	// For persistence.
 	onSubUpdated func(sub *subscription.Subscription)
+	// onPullStarted is fired when a remote subscription pull starts, before
+	// fetching. It is decoupled from the pull result.
+	onPullStarted func(sub *subscription.Subscription)
 	// onSubReenabledNode is called for each non-evicted node hash when a
 	// subscription transitions from disabled to enabled.
 	onSubReenabledNode func(hash node.Hash)
+
+	// refreshing tracks in-flight pulls per subscription ID so scheduled
+	// refreshes do not start a second full-pool download while one is running.
+	refreshing sync.Map // subscription ID -> *atomic.Int32
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -44,6 +54,9 @@ type SchedulerConfig struct {
 	Downloader   netutil.Downloader               // shared downloader
 	Fetcher      func(url string) ([]byte, error) // optional, defaults to Downloader.Download
 	OnSubUpdated func(sub *subscription.Subscription)
+	// OnPullStarted is fired when a remote subscription pull starts, before
+	// fetching. It is decoupled from the pull result.
+	OnPullStarted func(sub *subscription.Subscription)
 	// OnSubReenabledNode is fired after false->true enabled transition.
 	OnSubReenabledNode func(hash node.Hash)
 }
@@ -52,14 +65,15 @@ type SchedulerConfig struct {
 func NewSubscriptionScheduler(cfg SchedulerConfig) *SubscriptionScheduler {
 	downloadCtx, cancelDownload := context.WithCancel(context.Background())
 	sched := &SubscriptionScheduler{
-		subManager:         cfg.SubManager,
-		pool:               cfg.Pool,
-		downloader:         cfg.Downloader,
-		downloadCtx:        downloadCtx,
-		cancelDownload:     cancelDownload,
+		subManager:           cfg.SubManager,
+		pool:                 cfg.Pool,
+		downloader:           cfg.Downloader,
+		downloadCtx:          downloadCtx,
+		cancelDownload:       cancelDownload,
 		onSubUpdated:       cfg.OnSubUpdated,
+		onPullStarted:      cfg.OnPullStarted,
 		onSubReenabledNode: cfg.OnSubReenabledNode,
-		stopCh:             make(chan struct{}),
+		stopCh:               make(chan struct{}),
 	}
 	if cfg.Fetcher != nil {
 		sched.Fetcher = cfg.Fetcher
@@ -171,6 +185,11 @@ func (s *SubscriptionScheduler) runUpdatesWithWorkerLimit(subs []*subscription.S
 		default:
 		}
 
+		if s.isRefreshing(sub.ID) {
+			log.Printf("[scheduler] pull for %s already in flight; skipping scheduled refresh", sub.ID)
+			continue
+		}
+
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(sub *subscription.Subscription) {
@@ -187,10 +206,33 @@ func (s *SubscriptionScheduler) runUpdatesWithWorkerLimit(subs []*subscription.S
 	wg.Wait()
 }
 
+func (s *SubscriptionScheduler) beginRefresh(id string) {
+	counter, _ := s.refreshing.LoadOrStore(id, new(atomic.Int32))
+	counter.(*atomic.Int32).Add(1)
+}
+
+func (s *SubscriptionScheduler) endRefresh(id string) {
+	counter, ok := s.refreshing.Load(id)
+	if !ok {
+		return
+	}
+	if counter.(*atomic.Int32).Add(-1) <= 0 {
+		s.refreshing.Delete(id)
+	}
+}
+
+func (s *SubscriptionScheduler) isRefreshing(id string) bool {
+	counter, ok := s.refreshing.Load(id)
+	return ok && counter.(*atomic.Int32).Load() > 0
+}
+
 // UpdateSubscription fetches and parses outside the lock, then diffs and
 // applies the result under WithSubLock. This keeps the lock scope narrow
 // (no I/O under lock) while still preventing concurrent diff/apply races.
 func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscription) {
+	s.beginRefresh(sub.ID)
+	defer s.endRefresh(sub.ID)
+
 	attemptStartedNs := time.Now().UnixNano()
 	attemptSeq := sub.NextAttemptSeq()
 	attemptURL := sub.URL()
@@ -198,11 +240,18 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 	attemptContent := sub.Content()
 	attemptConfigVersion := sub.ConfigVersion()
 
+	// A pull starts here. The verified-node upload is an independent
+	// operation: it starts with the pull and does not depend on its outcome.
+	if attemptSourceType == subscription.SourceTypeRemote && s.onPullStarted != nil {
+		s.onPullStarted(sub)
+	}
+
 	// 1. Fetch/read content (lock-free).
 	var (
 		body []byte
 		err  error
 	)
+	started := time.Now()
 	if attemptSourceType == subscription.SourceTypeLocal {
 		body = []byte(attemptContent)
 	} else {
@@ -212,13 +261,16 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 			return
 		}
 	}
+	fetchDuration := time.Since(started)
 
 	// 2. Parse (lock-free).
+	started = time.Now()
 	parsed, err := subscription.ParseGeneralSubscription(body)
 	if err != nil {
 		s.handleUpdateFailure(sub, attemptStartedNs, attemptSeq, attemptConfigVersion, "parse", err)
 		return
 	}
+	parseDuration := time.Since(started)
 
 	// 3. Build refreshed managed nodes map (lock-free, pure computation).
 	refreshedManagedNodes := subscription.NewManagedNodes()
@@ -235,7 +287,16 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 
 	// 4. Diff, swap, add/remove — under lock.
 	applied := false
+	var (
+		applyDuration  time.Duration
+		addedCount     int
+		keptCount      int
+		unchangedCount int
+		removedCount   int
+	)
 	sub.WithOpLock(func() {
+		applyStarted := time.Now()
+		defer func() { applyDuration = time.Since(applyStarted) }()
 		// If refresh-input config changed while this attempt was in-flight, discard.
 		if sub.ConfigVersion() != attemptConfigVersion {
 			return
@@ -281,6 +342,7 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 			return true
 		})
 		added, kept, removed := subscription.DiffHashes(old, mergedManagedNodes)
+		addedCount, keptCount, removedCount = len(added), len(kept), len(removed)
 
 		sub.SwapManagedNodes(mergedManagedNodes)
 
@@ -305,14 +367,29 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 			if ok && managed.Evicted {
 				continue
 			}
-			raw := rawByHash[h]
-			if len(raw) == 0 {
-				if entry, ok := s.pool.GetEntry(h); ok {
-					raw = entry.RawOptions
+			entry, exists := s.pool.GetEntry(h)
+			if !exists {
+				// Recreate entries that are no longer in the pool.
+				raw := rawByHash[h]
+				if len(raw) > 0 {
+					s.pool.AddNodeFromSub(h, raw, sub.ID)
 				}
-			}
-			if len(raw) == 0 {
 				continue
+			}
+			// Re-adding re-evaluates the node for every platform, which is
+			// the dominant cost on large pools. Skip when neither the raw
+			// options nor the subscription tags changed.
+			newRaw := rawByHash[h]
+			rawChanged := len(newRaw) > 0 && !bytes.Equal(newRaw, entry.RawOptions)
+			oldManaged, _ := old.LoadNode(h)
+			tagsChanged := !slices.Equal(oldManaged.Tags, managed.Tags)
+			if !rawChanged && !tagsChanged {
+				unchangedCount++
+				continue
+			}
+			raw := newRaw
+			if len(raw) == 0 {
+				raw = entry.RawOptions
 			}
 			s.pool.AddNodeFromSub(h, raw, sub.ID)
 		}
@@ -331,6 +408,11 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 		log.Printf("[scheduler] stale success ignored for %s", sub.ID)
 		return
 	}
+	log.Printf(
+		"[scheduler] refreshed %s: fetch=%s parse=%s apply=%s bytes=%d parsed=%d added=%d kept=%d kept_unchanged=%d removed=%d",
+		sub.ID, fetchDuration, parseDuration, applyDuration,
+		len(body), len(parsed), addedCount, keptCount, unchangedCount, removedCount,
+	)
 
 	if s.onSubUpdated != nil {
 		s.onSubUpdated(sub)

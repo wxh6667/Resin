@@ -576,6 +576,23 @@ export function NodesPage() {
       },
     }),
     col.display({
+      id: "asn",
+      header: t("ASN"),
+      cell: (info) => {
+        const node = info.row.original;
+        if (!node.asn) {
+          return "-";
+        }
+        const label = `AS${node.asn} ${node.asn_org || ""}`.trim();
+        return (
+          <div style={{ maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={label}>
+            {label}
+            {node.is_hosting ? ` · ${t("机房")}` : ""}
+          </div>
+        );
+      },
+    }),
+    col.display({
       id: "reference_latency_ms",
       header: t("参考延迟"),
       cell: (info) => {
@@ -932,6 +949,14 @@ export function NodesPage() {
                     <span>{t("出口 / 区域")}</span>
                     <p>
                       {detailNode.egress_ip || "-"} / {regionToFlag(detailNode.region)}
+                    </p>
+                  </div>
+                  <div>
+                    <span>{t("ASN")}</span>
+                    <p>
+                      {detailNode.asn
+                        ? `AS${detailNode.asn} ${detailNode.asn_org || ""}${detailNode.is_hosting ? " · " + t("机房") : ""}`
+                        : "-"}
                     </p>
                   </div>
                   <div>

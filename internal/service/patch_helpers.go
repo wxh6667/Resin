@@ -132,3 +132,23 @@ func parseHTTPAbsoluteURL(field, value string) (*url.URL, *ServiceError) {
 	}
 	return u, nil
 }
+
+func (p mergePatch) optionalUint32Slice(field string) ([]uint32, bool, *ServiceError) {
+	raw, ok := p[field]
+	if !ok {
+		return nil, false, nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil, true, invalidArg(fmt.Sprintf("%s: must be an array", field))
+	}
+	value := make([]uint32, 0, len(arr))
+	for i, item := range arr {
+		num, ok := item.(float64)
+		if !ok || num <= 0 || num != float64(uint32(num)) {
+			return nil, true, invalidArg(fmt.Sprintf("%s[%d]: must be a positive integer", field, i))
+		}
+		value = append(value, uint32(num))
+	}
+	return value, true, nil
+}

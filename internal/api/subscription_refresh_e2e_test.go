@@ -80,33 +80,30 @@ func TestAPIContract_SubscriptionRefreshAction_E2EHTTPSource(t *testing.T) {
 	if refreshBody["status"] != "ok" {
 		t.Fatalf("refresh response status: got %v, want ok", refreshBody["status"])
 	}
-	if subscriptionHits.Load() == 0 {
-		t.Fatal("subscription HTTP source was not requested")
+	pullDeadline := time.Now().Add(5 * time.Second)
+	for subscriptionHits.Load() == 0 {
+		if time.Now().After(pullDeadline) {
+			t.Fatal("subscription HTTP source was not requested")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
-	getRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/subscriptions/"+subID, nil, true)
-	if getRec.Code != http.StatusOK {
-		t.Fatalf("get subscription status: got %d, want %d, body=%s", getRec.Code, http.StatusOK, getRec.Body.String())
-	}
-	subBody := decodeJSONMap(t, getRec)
+	subBody := waitForSubscriptionNodeCount(t, srv, subID, 1)
 	if got, _ := subBody["id"].(string); got != subID {
 		t.Fatalf("subscription id: got %q, want %q", got, subID)
 	}
 	lastChecked, _ := subBody["last_checked"].(string)
 	if strings.TrimSpace(lastChecked) == "" {
-		t.Fatalf("last_checked should be non-empty after refresh, body=%s", getRec.Body.String())
+		t.Fatal("last_checked should be non-empty after refresh")
 	}
 	lastUpdated, _ := subBody["last_updated"].(string)
 	if strings.TrimSpace(lastUpdated) == "" {
-		t.Fatalf("last_updated should be non-empty after refresh, body=%s", getRec.Body.String())
+		t.Fatal("last_updated should be non-empty after refresh")
 	}
 	if v, ok := subBody["last_error"]; ok {
 		if s, _ := v.(string); s != "" {
 			t.Fatalf("last_error should be empty after successful refresh, got %q", s)
 		}
-	}
-	if got := subBody["node_count"]; got != float64(1) {
-		t.Fatalf("subscription node_count after refresh: got %v, want %v", got, 1)
 	}
 	if got := subBody["healthy_node_count"]; got != float64(0) {
 		t.Fatalf("subscription healthy_node_count after refresh: got %v, want %v", got, 0)
@@ -171,15 +168,52 @@ func TestAPIContract_SubscriptionRefreshAction_E2ELocalSource(t *testing.T) {
 		t.Fatalf("refresh local subscription status: got %d, want %d, body=%s", refreshRec.Code, http.StatusOK, refreshRec.Body.String())
 	}
 
-	getRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/subscriptions/"+subID, nil, true)
-	if getRec.Code != http.StatusOK {
-		t.Fatalf("get local subscription status: got %d, want %d, body=%s", getRec.Code, http.StatusOK, getRec.Body.String())
-	}
-	subBody := decodeJSONMap(t, getRec)
-	if got := subBody["node_count"]; got != float64(1) {
-		t.Fatalf("local subscription node_count after refresh: got %v, want %v", got, 1)
-	}
+	subBody := waitForSubscriptionNodeCount(t, srv, subID, 1)
 	if got, _ := subBody["last_error"].(string); got != "" {
 		t.Fatalf("local subscription last_error: got %q, want empty", got)
+	}
+}
+
+// waitForSubscriptionNodeCount polls until a background refresh has applied
+// the expected number of nodes.
+func waitForSubscriptionNodeCount(t *testing.T, srv *Server, subID string, want int) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/subscriptions/"+subID, nil, true)
+		if rec.Code == http.StatusOK {
+			body := decodeJSONMap(t, rec)
+			if got, ok := body["node_count"].(float64); ok && int(got) == want {
+				return body
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for subscription %s node_count=%d", subID, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitForSingleNodeWithOutbound polls until the subscription has exactly one
+// node whose outbound is ready.
+func waitForSingleNodeWithOutbound(t *testing.T, srv *Server, subID string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		nodesRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes?subscription_id="+subID, nil, true)
+		if nodesRec.Code == http.StatusOK {
+			nodesBody := decodeJSONMap(t, nodesRec)
+			if items, ok := nodesBody["items"].([]any); ok && len(items) == 1 {
+				if item, ok := items[0].(map[string]any); ok {
+					if hasOutbound, _ := item["has_outbound"].(bool); hasOutbound {
+						return item
+					}
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for a refreshed node with outbound")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

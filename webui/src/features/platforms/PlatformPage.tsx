@@ -310,6 +310,35 @@ export function PlatformPage() {
               </div>
 
               <div className="field-group">
+                <label className="field-label" htmlFor="create-exclude-hosting">
+                  {t("排除机房出口")}
+                </label>
+                <div className="switch-row">
+                  <label className="switch-label" htmlFor="create-exclude-hosting">
+                    {t("开启后，出口 ASN 属于云/机房供应商的节点不参与此平台路由")}
+                    <span
+                      className="subscription-info-icon"
+                      title={t("开启后，出口 ASN 属于云/机房供应商的节点不参与此平台路由")}
+                      aria-label={t("开启后，出口 ASN 属于云/机房供应商的节点不参与此平台路由")}
+                      tabIndex={0}
+                    >
+                      <Info size={13} />
+                    </span>
+                  </label>
+                  <Switch id="create-exclude-hosting" {...createForm.register("exclude_hosting")} />
+                </div>
+                <label className="field-label" htmlFor="create-asn-excludes" style={{ marginTop: 8 }}>
+                  {t("额外排除 ASN（逗号分隔）")}
+                </label>
+                <input
+                  id="create-asn-excludes"
+                  className="text-input"
+                  placeholder={t("例如 31898, 16276")}
+                  {...createForm.register("asn_excludes_text")}
+                />
+              </div>
+
+              <div className="field-group">
                 <label className="field-label" htmlFor="create-empty-account-behavior">
                   {t("反向代理账号为空行为")}
                 </label>

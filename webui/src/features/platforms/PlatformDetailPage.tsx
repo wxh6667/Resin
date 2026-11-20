@@ -606,6 +606,27 @@ export function PlatformDetailPage() {
                   </div>
 
                   <div className="field-group">
+                    <label className="field-label" htmlFor="detail-edit-exclude-hosting">
+                      {t("排除机房出口")}
+                    </label>
+                    <div className="switch-row">
+                      <label className="switch-label" htmlFor="detail-edit-exclude-hosting">
+                        {t("开启后，出口 ASN 属于云/机房供应商的节点不参与此平台路由")}
+                      </label>
+                      <Switch id="detail-edit-exclude-hosting" {...editForm.register("exclude_hosting")} />
+                    </div>
+                    <label className="field-label" htmlFor="detail-edit-asn-excludes" style={{ marginTop: 8 }}>
+                      {t("额外排除 ASN（逗号分隔）")}
+                    </label>
+                    <input
+                      id="detail-edit-asn-excludes"
+                      className="text-input"
+                      placeholder={t("例如 31898, 16276")}
+                      {...editForm.register("asn_excludes_text")}
+                    />
+                  </div>
+
+                  <div className="field-group">
                     <label className="field-label" htmlFor="detail-edit-empty-account-behavior">
                       {t("反向代理账号为空行为")}
                     </label>

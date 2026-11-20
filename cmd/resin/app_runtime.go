@@ -33,6 +33,7 @@ type resinApp struct {
 	runtimeCfg      *atomic.Pointer[config.RuntimeConfig]
 	accountMatcher  *proxy.AccountMatcherRuntime
 	geoSvc          *geoip.Service
+	asnReader       geoip.ASNReader
 	topoRuntime     *topologyRuntime
 	flushWorker     *state.CacheFlushWorker
 	metricsDB       *metrics.MetricsRepo
@@ -131,12 +132,25 @@ func (a *resinApp) initTopologyRuntime(engine *state.StateEngine) (*netutil.Retr
 	// Phase 2: Construct GeoIP service (start after retry downloader wiring).
 	a.geoSvc = newGeoIPService(a.envCfg.CacheDir, a.envCfg.GeoIPUpdateSchedule, retryDL)
 
+	// Phase 2b: ASN reader classifies egress IPs as hosting/ISP. A missing
+	// database disables the feature; RESIN_HOSTING_ASN extends the built-in
+	// list at boot.
+	if err := geoip.ExtendHostingASNs(a.envCfg.HostingASNs); err != nil {
+		return nil, fmt.Errorf("RESIN_HOSTING_ASN: %w", err)
+	}
+	asnReader, err := geoip.OpenASNReader(a.envCfg.ASNDBPath)
+	if err != nil {
+		return nil, fmt.Errorf("ASN database: %w", err)
+	}
+	a.asnReader = asnReader
+
 	// Phase 3: Topology (pool, probe, scheduler).
 	topoRuntime, err := newTopologyRuntime(
 		engine,
 		a.envCfg,
 		a.runtimeCfg,
 		a.geoSvc,
+		asnReader,
 		retryDL,
 		a.onProbeConnectionLifecycle,
 		func(hash node.Hash) {
@@ -572,6 +586,11 @@ func (a *resinApp) shutdown(ctx context.Context) {
 
 	a.geoSvc.Stop()
 	log.Println("GeoIP service stopped")
+
+	if a.asnReader != nil {
+		_ = a.asnReader.Close()
+		log.Println("ASN database closed")
+	}
 
 	// 2. Stop observability sinks (flush remaining data).
 	a.requestlogSvc.Stop()

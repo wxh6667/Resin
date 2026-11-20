@@ -87,6 +87,9 @@ func (r *CacheRepo) BulkUpsertNodesDynamic(nodes []model.NodeDynamic) error {
 				n.LastAuthorityLatencyProbeAttemptNs,
 				n.LastEgressUpdateAttemptNs,
 				n.ChainProxy,
+				int64(n.ASN),
+				n.ASNOrg,
+				boolToInt(n.IsHosting),
 			)
 			return err
 		},
@@ -110,7 +113,8 @@ func (r *CacheRepo) BulkDeleteNodesDynamic(hashes []string) error {
 func (r *CacheRepo) LoadAllNodesDynamic() ([]model.NodeDynamic, error) {
 	rows, err := r.db.Query(`
 		SELECT hash, failure_count, circuit_open_since, egress_ip, egress_region, egress_updated_at_ns,
-		       last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns, chain_proxy
+		       last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns, chain_proxy,
+		       asn, asn_org, is_hosting
 		FROM nodes_dynamic`)
 	if err != nil {
 		return nil, err
@@ -120,6 +124,8 @@ func (r *CacheRepo) LoadAllNodesDynamic() ([]model.NodeDynamic, error) {
 	var result []model.NodeDynamic
 	for rows.Next() {
 		var n model.NodeDynamic
+		var asn int64
+		var isHosting int
 		if err := rows.Scan(
 			&n.Hash,
 			&n.FailureCount,
@@ -131,9 +137,14 @@ func (r *CacheRepo) LoadAllNodesDynamic() ([]model.NodeDynamic, error) {
 			&n.LastAuthorityLatencyProbeAttemptNs,
 			&n.LastEgressUpdateAttemptNs,
 			&n.ChainProxy,
+			&asn,
+			&n.ASNOrg,
+			&isHosting,
 		); err != nil {
 			return nil, err
 		}
+		n.ASN = uint32(asn)
+		n.IsHosting = isHosting != 0
 		result = append(result, n)
 	}
 	return result, rows.Err()
@@ -401,6 +412,9 @@ func (r *CacheRepo) FlushTx(ops FlushOps) error {
 				n.LastAuthorityLatencyProbeAttemptNs,
 				n.LastEgressUpdateAttemptNs,
 				n.ChainProxy,
+				int64(n.ASN),
+				n.ASNOrg,
+				boolToInt(n.IsHosting),
 			)
 			return err
 		}},
@@ -456,9 +470,10 @@ const (
 
 	upsertNodesDynamicSQL = `INSERT INTO nodes_dynamic (
 			hash, failure_count, circuit_open_since, egress_ip, egress_region, egress_updated_at_ns,
-			last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns, chain_proxy
+			last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns, chain_proxy,
+			asn, asn_org, is_hosting
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(hash) DO UPDATE SET
 			failure_count                          = excluded.failure_count,
 			circuit_open_since                     = excluded.circuit_open_since,
@@ -468,7 +483,10 @@ const (
 			last_latency_probe_attempt_ns          = excluded.last_latency_probe_attempt_ns,
 			last_authority_latency_probe_attempt_ns = excluded.last_authority_latency_probe_attempt_ns,
 			last_egress_update_attempt_ns          = excluded.last_egress_update_attempt_ns,
-			chain_proxy = excluded.chain_proxy`
+			chain_proxy = excluded.chain_proxy,
+			asn = excluded.asn,
+			asn_org = excluded.asn_org,
+			is_hosting = excluded.is_hosting`
 
 	upsertNodeLatencySQL = `INSERT INTO node_latency (node_hash, domain, ewma_ns, last_updated_ns, chain_proxy)
 		 VALUES (?, ?, ?, ?, ?)

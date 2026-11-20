@@ -52,6 +52,11 @@ type ProbeConfig struct {
 	// both high and normal queues are non-empty.
 	// Nil defaults to 10% chance.
 	ChooseNormalWhenBoth func() bool
+
+	// ASNLookup classifies a freshly probed egress IP (AS number, org and
+	// hosting flag). Nil disables the feature; probes then never fill
+	// Feedback.ASN.
+	ASNLookup func(ip netip.Addr) node.ASNInfo
 }
 
 // ProbeManager schedules and executes active probes against nodes in the pool.
@@ -72,6 +77,7 @@ type ProbeManager struct {
 	maxAuthorityLatencyTestInterval func() time.Duration
 	latencyTestURL                  func() string
 	latencyAuthorities              func() []string
+	asnLookup                       func(netip.Addr) node.ASNInfo
 	onProbeEvent                    func(kind string)
 }
 
@@ -276,6 +282,7 @@ func NewProbeManager(cfg ProbeConfig) *ProbeManager {
 		latencyTestURL:                  cfg.LatencyTestURL,
 		latencyAuthorities:              cfg.LatencyAuthorities,
 		onProbeEvent:                    cfg.OnProbeEvent,
+		asnLookup:                       cfg.ASNLookup,
 	}
 }
 
@@ -849,6 +856,10 @@ func (m *ProbeManager) performEgressProbe(hash node.Hash) (netip.Addr, egressPro
 	if err == nil {
 		f.IP = &ip
 		f.Region = loc
+		if m.asnLookup != nil {
+			asn := m.asnLookup(ip)
+			f.ASN = &asn
+		}
 	}
 	m.pool.ApplyFeedback(hash, version, f)
 	if err != nil {
