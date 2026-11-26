@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -121,6 +122,68 @@ func TestBuildBatchFiltersAndEncodes(t *testing.T) {
 	}
 	if len(fingerprints) != 2 {
 		t.Fatalf("unique fingerprints = %d, want 2", len(fingerprints))
+	}
+}
+
+func TestBuildBatchRewritesDisplayName(t *testing.T) {
+	now := time.Now()
+	pool := buildPool(t, []poolNodeSpec{
+		{raw: ssRaw, probeAt: now.Add(-10 * time.Minute)},
+	})
+	hash := node.HashFromRawOptions(json.RawMessage(ssRaw))
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatalf("node %s missing from pool", hash.Hex())
+	}
+	entry.SetEgressIP(netip.MustParseAddr("198.51.100.7"))
+	entry.SetEgressRegion("it")
+
+	uploader, err := NewUploader(Config{
+		Endpoint: "https://example.com/upload/verified",
+		Token:    "token",
+		Window:   2 * time.Hour,
+	}, pool, func(*node.NodeEntry) (float64, bool) { return 120, true })
+	if err != nil {
+		t.Fatalf("NewUploader: %v", err)
+	}
+
+	body, stats, err := uploader.BuildBatch(now)
+	if err != nil {
+		t.Fatalf("BuildBatch: %v", err)
+	}
+	if stats.Records != 1 {
+		t.Fatalf("records = %d, want 1", stats.Records)
+	}
+	var record Record
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(body))), &record); err != nil {
+		t.Fatalf("unmarshal record: %v", err)
+	}
+	want := "IT-88-198.51.100.7"
+	if !strings.HasSuffix(record.RawURI, "#"+want) {
+		t.Fatalf("raw_uri fragment = %q, want suffix #%s", record.RawURI, want)
+	}
+	if record.Fingerprint != Fingerprint(record.RawURI) {
+		t.Fatalf("fingerprint changed by display name: record=%q raw_uri=%q", record.Fingerprint, record.RawURI)
+	}
+}
+
+func TestUploadDisplayName(t *testing.T) {
+	ms := func(v float64) *float64 { return &v }
+	cases := []struct {
+		region, ip string
+		latency    *float64
+		want       string
+	}{
+		{"it", "198.51.100.7", ms(120), "IT-88-198.51.100.7"},
+		{"DE", "203.0.113.1", ms(5), "DE-100-203.0.113.1"},
+		{"", "", nil, "XX-0"},
+		{"ng", "2a06:f901::1", ms(950), "NG-5-2a06:f901::1"},
+		{"fr", "192.0.2.9", ms(2000), "FR-0-192.0.2.9"},
+	}
+	for _, tc := range cases {
+		if got := uploadDisplayName(tc.region, tc.ip, tc.latency); got != tc.want {
+			t.Errorf("uploadDisplayName(%q,%q,%v) = %q, want %q", tc.region, tc.ip, tc.latency, got, tc.want)
+		}
 	}
 }
 

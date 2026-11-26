@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -241,7 +242,6 @@ func (u *Uploader) BuildBatch(now time.Time) ([]byte, Stats, error) {
 
 		record := Record{
 			Fingerprint: fingerprint,
-			RawURI:      uri,
 			CheckedAt:   time.Unix(0, checkedNs).UTC().Format(time.RFC3339Nano),
 		}
 		if egressIP := entry.GetEgressIP(); egressIP.IsValid() {
@@ -253,6 +253,10 @@ func (u *Uploader) BuildBatch(now time.Time) ([]byte, Stats, error) {
 				record.LatencyMS = &ms
 			}
 		}
+		// Replace the original subscription tag with Resin's own probe
+		// results so downstream clients see "<COUNTRY>-<SCORE>-<EGRESS_IP>".
+		// The fingerprint ignores the fragment, so node identity is unchanged.
+		record.RawURI = uriWithDisplayName(uri, uploadDisplayName(record.Region, record.EgressIP, record.LatencyMS))
 		line, err := json.Marshal(record)
 		if err != nil {
 			encodeErr = err
@@ -370,6 +374,40 @@ func (u *Uploader) Status() Status {
 		status.LastAttemptAt = u.lastAttempt.FinishedAt
 	}
 	return status
+}
+
+// uploadDisplayName renders the receiver-facing node alias from Resin's own
+// probe results: "<COUNTRY>-<SCORE>-<EGRESS_IP>". Country is the upper-cased
+// probed egress region ("XX" when unknown). Score is a 0-100 quality scale
+// derived from the measured EWMA latency, higher is better; unknown latency
+// renders 0.
+func uploadDisplayName(region, egressIP string, latencyMS *float64) string {
+	country := strings.ToUpper(strings.TrimSpace(region))
+	if country == "" {
+		country = "XX"
+	}
+	score := 0
+	if latencyMS != nil && *latencyMS > 0 {
+		score = int(math.Round(100 - *latencyMS/10))
+		switch {
+		case score < 0:
+			score = 0
+		case score > 100:
+			score = 100
+		}
+	}
+	name := country + "-" + strconv.Itoa(score)
+	if ip := strings.TrimSpace(egressIP); ip != "" {
+		name += "-" + ip
+	}
+	return name
+}
+
+// uriWithDisplayName swaps the URI fragment (display name) without touching
+// the base, so the receiver-computed fingerprint stays identical.
+func uriWithDisplayName(uri, name string) string {
+	base, _, _ := strings.Cut(uri, "#")
+	return base + "#" + name
 }
 
 func gzipBytes(data []byte) ([]byte, error) {
